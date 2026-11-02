@@ -19,7 +19,7 @@ class VersionService {
   // CONFIGURA AQUÍ LA VERSIÓN ACTUAL DE TU APP
   // ============================================
   static const String currentVersionName = '0.0.2'; // version (debe coincidir con pubspec / build)
-  static const String currentParche = '009'; // parche local (comparar con remoto lollite.json)
+  static const String currentParche = '013'; // parche local (comparar con remoto lollite.json)
   static const String appId = 'lollite';
 
   static const String manifestUrl =

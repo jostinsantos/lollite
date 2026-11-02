@@ -6,6 +6,7 @@ import 'descubrir/descubrir.dart';
 import 'buscar/buscar.dart';
 import 'biblioteca/biblioteca.dart';
 import 'config/config.dart';
+import 'live/live.dart';
 
 /// Shell del repo en móvil (barra inferior según tabs del lol.json / capabilities).
 class RepoMainHome extends StatefulWidget {
@@ -54,6 +55,16 @@ class _RepoMainHomeState extends State<RepoMainHome> {
               icon: Icon(Icons.search),
               selectedIcon: Icon(Icons.search),
               label: 'Buscar',
+            ),
+          ));
+        case 'live':
+          out.add((
+            id: id,
+            page: RepoLivePage(repo: repo),
+            dest: const NavigationDestination(
+              icon: Icon(Icons.live_tv_outlined),
+              selectedIcon: Icon(Icons.live_tv),
+              label: 'TV Online',
             ),
           ));
         case 'library':

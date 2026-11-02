@@ -13,6 +13,7 @@ import '../launcher/config.dart';
 import '../launcher/buscar.dart';
 import '../repo/player/player.dart';
 import 'downloads_page.dart';
+import 'salas_page.dart';
 
 /// Launcher móvil: continuar viendo + iconos de repos (sin home del repo).
 class LauncherHome extends StatefulWidget {
@@ -284,6 +285,14 @@ class _LauncherHomeState extends State<LauncherHome> {
                               context,
                               MaterialPageRoute(
                                   builder: (_) => const CommunityPage()),
+                            ),
+                          ),
+                          _HeaderIcon(
+                            icon: Icons.groups_rounded,
+                            onTap: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (_) => const MobileSalasPage()),
                             ),
                           ),
                           _HeaderIcon(

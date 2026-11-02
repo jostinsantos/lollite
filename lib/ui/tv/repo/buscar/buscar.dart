@@ -2,8 +2,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:provider/provider.dart';
 import '../../../../data/models/repo_manifest.dart';
 import '../../../../data/services/content_service.dart';
+import '../../../../data/services/repo_prefs.dart';
 import '../../widgets/focusable.dart';
 import '../main_home.dart';
 import '../contenido/contenido.dart';
@@ -30,13 +32,39 @@ class _RepoSearchPageState extends State<RepoSearchPage> {
   int _searchId = 0;
   bool _showAccents = false;
 
-  /// Historial de búsquedas (elementos buscados anteriormente).
-  final List<String> _history = [];
+  /// Historial de búsquedas (persistente por repo).
+  List<String> _history = [];
   static const int _maxHistory = 12;
 
   final FocusNode _aKeyFocus = FocusNode();
   final FocusNode _firstResultFocus = FocusNode(debugLabel: 'firstResult');
   final FocusNode _searchButtonFocus = FocusNode(debugLabel: 'searchButton');
+
+  String get _repoId => widget.repo.manifest.id;
+
+  bool get _useBackdrop =>
+      widget.repo.manifest.searchImageStyle == 'backdrop';
+
+  bool get _showTitle => widget.repo.manifest.searchShowTitle;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadHistory());
+  }
+
+  void _loadHistory() {
+    if (!mounted) return;
+    final prefs = context.read<RepoPrefs>();
+    setState(() {
+      _history = List<String>.from(prefs.searchHistory(_repoId));
+    });
+  }
+
+  Future<void> _persistHistory() async {
+    if (!mounted) return;
+    await context.read<RepoPrefs>().setSearchHistory(_repoId, _history);
+  }
 
   @override
   void dispose() {
@@ -78,9 +106,12 @@ class _RepoSearchPageState extends State<RepoSearchPage> {
     if (q.isEmpty || q.length < 2) return;
 
     // Guardar en historial (sin duplicados, más reciente primero).
-    _history.remove(q);
-    _history.insert(0, q);
-    if (_history.length > _maxHistory) _history.removeLast();
+    setState(() {
+      _history.remove(q);
+      _history.insert(0, q);
+      if (_history.length > _maxHistory) _history.removeLast();
+    });
+    unawaited(_persistHistory());
 
     _debounce?.cancel();
     _doSearch();
@@ -243,14 +274,19 @@ class _RepoSearchPageState extends State<RepoSearchPage> {
         Expanded(
           child: GridView.builder(
             itemCount: _items.length,
-            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-              maxCrossAxisExtent: 120,
+            gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: _useBackdrop ? 220 : 120,
               mainAxisSpacing: 12,
               crossAxisSpacing: 10,
-              childAspectRatio: 0.62,
+              childAspectRatio: _useBackdrop
+                  ? (_showTitle ? 1.55 : 1.78)
+                  : (_showTitle ? 0.55 : 0.62),
             ),
             itemBuilder: (context, i) {
               final item = _items[i];
+              final img = _useBackdrop
+                  ? (item.backdrop ?? item.poster)
+                  : (item.poster ?? item.backdrop);
               return Focusable(
                 autofocus: i == 0,
                 focusNode: i == 0 ? _firstResultFocus : null,
@@ -261,15 +297,15 @@ class _RepoSearchPageState extends State<RepoSearchPage> {
                     Expanded(
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(6),
-                        child: item.poster != null
+                        child: img != null
                             ? Stack(
                                 fit: StackFit.expand,
                                 children: [
                                   CachedNetworkImage(
-                                    imageUrl: item.poster!,
+                                    imageUrl: img,
                                     fit: BoxFit.cover,
                                     width: double.infinity,
-                                    memCacheWidth: 240,
+                                    memCacheWidth: _useBackdrop ? 480 : 240,
                                     placeholder: (_, __) =>
                                         Container(color: const Color(0xFF1c1c1c)),
                                     errorWidget: (_, __, ___) => Container(
@@ -299,17 +335,19 @@ class _RepoSearchPageState extends State<RepoSearchPage> {
                             : Container(color: const Color(0xFF1c1c1c)),
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      item.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: f ? Colors.white : Colors.white70,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w500,
+                    if (_showTitle) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        item.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: f ? Colors.white : Colors.white70,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w500,
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
               );

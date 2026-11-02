@@ -14,6 +14,8 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../../../../data/services/library_service.dart';
 import '../../../../data/services/content_service.dart';
 import '../../../../data/models/stream_server.dart';
+import '../../../../data/services/party_service.dart';
+import 'party_player.dart';
 import '../../../../data/models/stream_badges.dart';
 import '../../../../data/models/repo_manifest.dart';
 
@@ -47,6 +49,7 @@ class PlayerPage extends StatefulWidget {
   final InstalledRepo? loadRepo;
   final String preferredLanguage;
   final bool isTv;
+  final PartyRoom? partyRoom;
 
   const PlayerPage({
     super.key,
@@ -73,6 +76,7 @@ class PlayerPage extends StatefulWidget {
     this.loadRepo,
     this.preferredLanguage = '',
     this.isTv = false,
+    this.partyRoom,
   });
 
   @override
@@ -218,6 +222,19 @@ class _PlayerPageState extends State<PlayerPage> {
   final List<FocusNode> _seasonFocusNodes = [];
   final List<FocusNode> _episodeFocusNodes = [];
 
+
+  // —— Party ——
+  bool get _isParty => widget.partyRoom != null;
+  bool get _isPartyHost =>
+      _isParty &&
+      PartyService.instance.currentRoom?.hostUserId ==
+          PartyService.instance.userId;
+  bool _partySyncStarted = false;
+  bool _applyingRemote = false;
+  bool _showPartyChat = false;
+  bool _showPartyMembers = false;
+  final _partyChatCtrl = TextEditingController();
+
   late List<StreamServer> _servers;
   late int _serverIndex;
   StreamServer? get _current =>
@@ -355,10 +372,23 @@ class _PlayerPageState extends State<PlayerPage> {
     return false;
   }
 
+  /// Solo modo audio si el contenido es tipo música (repo declara type music|audio|song|musica).
+  /// Si no es música, siempre se trata como video normal.
+  bool get _isMusicContent {
+    final t = widget.contentType.toLowerCase().trim();
+    return t == 'music' ||
+        t == 'audio' ||
+        t == 'song' ||
+        t == 'musica' ||
+        t == 'música' ||
+        t == 'track' ||
+        t == 'album';
+  }
+
   bool get _audioOnly {
-    final s = _current;
-    if (s != null) return _isAudioOnlyUrl(s.url, server: s);
-    return _isAudioOnlyUrl(widget.url);
+    // Solo activar UI de solo-audio cuando el repo marca el ítem como música.
+    if (!_isMusicContent) return false;
+    return true;
   }
 
   /// null = automático (HLS→video_player, TS→media_kit). true/false = forzado por usuario.
@@ -371,6 +401,8 @@ class _PlayerPageState extends State<PlayerPage> {
     if (isHlsUrl(url, isHlsFlag: isHlsFlag)) return false;
     // .ts / mpegts → SIEMPRE media_kit (audios embebidos)
     if (isTsUrl(url)) return true;
+    // Música → media_kit (arte + audio)
+    if (_isMusicContent) return true;
     if (_isAudioOnlyUrl(url, server: server ?? _current)) return true;
     return false;
   }
@@ -420,6 +452,9 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   void initState() {
     super.initState();
+    if (_isParty) {
+      PartyService.instance.addListener(_onPartyUpdate);
+    }
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
@@ -639,6 +674,11 @@ class _PlayerPageState extends State<PlayerPage> {
 
   @override
   void dispose() {
+    if (_isParty) {
+      PartyService.instance.removeListener(_onPartyUpdate);
+      unawaited(PartyService.instance.leaveCurrentRoom(silent: true));
+    }
+    _partyChatCtrl.dispose();
     // Si saltamos al siguiente capítulo, el progreso ya se guardó con
     // _saveProgressNowAsync(). No reescribir o el historial queda en el anterior.
     if (!_navigatingToNextPlayer) {
@@ -875,6 +915,10 @@ class _PlayerPageState extends State<PlayerPage> {
         _serverIndex = preferred;
         unawaited(_probeRemainingServersInBackground(playingIndex: preferred));
         await _startCurrent();
+        if (_isParty) {
+          await PartyService.instance.setServerReady(true);
+          _tryStartPartySync();
+        }
         // Refresco silencioso en background (renueva caché)
         unawaited(_refreshServersInBackground());
         return;
@@ -906,6 +950,10 @@ class _PlayerPageState extends State<PlayerPage> {
       _serverIndex = preferred;
       unawaited(_probeRemainingServersInBackground(playingIndex: preferred));
       await _startCurrent();
+      if (_isParty) {
+        await PartyService.instance.setServerReady(true);
+        _tryStartPartySync();
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -1989,6 +2037,7 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _switchServer(int index) async {
+    if (_isParty && !_isPartyHost && !_applyingRemote) return;
     if (index < 0 || index >= _servers.length) return;
     final pos = _position.inMilliseconds > 0
         ? _position.inMilliseconds
@@ -2020,7 +2069,195 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
+
+  void _onPartyUpdate() {
+    if (!mounted || !_isParty) return;
+    if (PartyService.instance.currentRoom == null && widget.partyRoom != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('La sala fue cerrada')),
+      );
+      Navigator.of(context).maybePop();
+      return;
+    }
+    if (PartyService.instance.isRoomExpired) {
+      unawaited(PartyService.instance.leaveCurrentRoom());
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('La sala expiró (máx. 4 horas)')),
+      );
+      Navigator.of(context).maybePop();
+      return;
+    }
+    setState(() {});
+    _maybeApplyRemotePlayback(force: true);
+    _tryStartPartySync();
+  }
+
+  void _tryStartPartySync() {
+    if (!_isParty || _partySyncStarted) return;
+    if (!PartyService.instance.allMembersHaveServer) return;
+    if (_servers.isEmpty) return;
+    _partySyncStarted = true;
+    if (_isPartyHost) {
+      unawaited(_pushPartyPlayback(forcePlay: false));
+    } else {
+      _maybeApplyRemotePlayback(force: true);
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _pushPartyPlayback({bool? forcePlay}) async {
+    if (!_isPartyHost || _servers.isEmpty) return;
+    final s = _servers[_serverIndex.clamp(0, _servers.length - 1)];
+    final state = PlaybackState(
+      isPlaying: forcePlay ?? _playing,
+      positionMs: _position.inMilliseconds,
+      serverIndex: _serverIndex,
+      serverName: s.name,
+      streamUrl: s.url,
+      headers: Map<String, String>.from(s.headers),
+      isHls: s.isHls,
+    );
+    await PartyService.instance.updatePlayback(state);
+  }
+
+  void _maybeApplyRemotePlayback({bool force = false}) {
+    if (!_isParty || _isPartyHost) return;
+    if (!_partySyncStarted && !force) return;
+    final room = PartyService.instance.currentRoom;
+    if (room == null) return;
+    final pb = room.playbackState;
+    if (pb.streamUrl == null || pb.streamUrl!.isEmpty) return;
+    final needNew = _servers.isEmpty ||
+        _servers[_serverIndex.clamp(0, _servers.length - 1)].url != pb.streamUrl;
+    if (needNew) {
+      var idx = _servers.indexWhere((s) => s.url == pb.streamUrl);
+      if (idx < 0) {
+        _servers = [
+          ..._servers,
+          StreamServer(
+            name: pb.serverName ?? 'Party',
+            url: pb.streamUrl!,
+            headers: pb.headers,
+            isHls: pb.isHls,
+          ),
+        ];
+        idx = _servers.length - 1;
+      }
+      unawaited(_switchServer(idx).then((_) => _applyPartyPos(pb)));
+    } else {
+      unawaited(_applyPartyPos(pb));
+    }
+  }
+
+  Future<void> _applyPartyPos(PlaybackState pb) async {
+    _applyingRemote = true;
+    try {
+      final target = Duration(milliseconds: pb.positionMs);
+      if ((_position - target).abs() > const Duration(milliseconds: 800)) {
+        if (_useMediaKit) {
+          await _mk?.seek(target);
+        } else {
+          await _vp?.seekTo(target);
+        }
+      }
+      if (pb.isPlaying && !_playing) {
+        await _togglePlay();
+      } else if (!pb.isPlaying && _playing) {
+        await _togglePlay();
+      }
+    } finally {
+      _applyingRemote = false;
+    }
+  }
+
+  Future<void> _createPartyRoom() async {
+    await PartyService.instance.init();
+    if (!mounted) return;
+    final titleCtrl = TextEditingController(text: widget.title);
+    final usernameCtrl = TextEditingController(text: PartyService.instance.username ?? '');
+    var isPublic = true;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          backgroundColor: const Color(0xFF161A22),
+          title: const Text('Crear sala Party', style: TextStyle(color: Colors.white)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: usernameCtrl,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(labelText: 'Tu nombre', labelStyle: TextStyle(color: Colors.white54)),
+                maxLength: 24,
+              ),
+              TextField(
+                controller: titleCtrl,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  labelText: 'Título de la sala',
+                  labelStyle: TextStyle(color: Colors.white54),
+                ),
+                maxLength: 80,
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Pública', style: TextStyle(color: Colors.white70)),
+                value: isPublic,
+                activeColor: const Color(0xFFE50914),
+                onChanged: (v) => setLocal(() => isPublic = v),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Crear')),
+          ],
+        ),
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      if (usernameCtrl.text.trim().isNotEmpty) {
+        await PartyService.instance.setUsername(usernameCtrl.text.trim());
+      }
+      final room = await PartyService.instance.createRoom(
+        title: titleCtrl.text.trim().isEmpty ? widget.title : titleCtrl.text.trim(),
+        contentId: widget.contentId ?? '',
+        repoId: widget.repoId ?? widget.loadRepo?.manifest.id ?? '',
+        contentType: widget.contentType,
+        poster: widget.poster,
+        backdrop: widget.backdrop,
+        season: widget.season,
+        episode: widget.episode,
+        language: widget.preferredLanguage.isEmpty ? null : widget.preferredLanguage,
+        isPublic: isPublic,
+      );
+      if (!mounted) return;
+      final repo = widget.loadRepo;
+      if (repo == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No hay repositorio para la sala')),
+          );
+        }
+        return;
+      }
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => TvPartyPlayerPage(room: room, repo: repo),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+    }
+  }
+
   Future<void> _togglePlay() async {
+    if (_isParty && !_isPartyHost && !_applyingRemote) return;
+
     bool nowPlaying = _playing;
     if (_useMediaKit) {
       final p = _mk;
@@ -2058,6 +2295,7 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _seekBy(int seconds) async {
+    if (_isParty && !_isPartyHost && !_applyingRemote) return;
     final next = _position + Duration(seconds: seconds);
     final clamped = next < Duration.zero
         ? Duration.zero
@@ -6348,6 +6586,25 @@ class _PlayerPageState extends State<PlayerPage> {
                         _tvActionBtn(
                           icon: Icons.dns_rounded,
                           onActivate: _openServersMenu,
+                        ),
+                      ],
+                      if (!_isParty) ...[
+                        const SizedBox(width: 6),
+                        _tvActionBtn(
+                          icon: Icons.groups_rounded,
+                          onActivate: _createPartyRoom,
+                        ),
+                      ],
+                      if (_isParty) ...[
+                        const SizedBox(width: 6),
+                        _tvActionBtn(
+                          icon: Icons.chat_rounded,
+                          onActivate: () => setState(() => _showPartyChat = !_showPartyChat),
+                        ),
+                        const SizedBox(width: 6),
+                        _tvActionBtn(
+                          icon: Icons.group_rounded,
+                          onActivate: () => setState(() => _showPartyMembers = !_showPartyMembers),
                         ),
                       ],
                       const SizedBox(width: 6),

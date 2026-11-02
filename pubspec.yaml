@@ -30,7 +30,7 @@ dependencies:
   media_kit_video: ^1.2.5
   media_kit_libs_video: ^1.0.5
   apk_sideload: ^0.0.2
-
+  supabase_flutter: ^2.8.0
 
 dev_dependencies:
   flutter_test:

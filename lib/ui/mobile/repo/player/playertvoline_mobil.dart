@@ -4,15 +4,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 import '../../../../data/models/repo_manifest.dart';
 import '../../../../data/models/stream_server.dart';
 import '../../../../data/services/content_service.dart';
+import '../../../../data/services/library_service.dart';
+import '../../widgets/cached_poster.dart';
+import '../../widgets/focusable.dart';
 
-/// Player de canales en vivo (móvil). Solo media_kit.
-/// Sin barra de progreso ni seek (stream continuo).
+/// Player móvil en vivo con guía de canales (categorías | canales) superpuesta.
 class PlayerMobileOnlinePage extends StatefulWidget {
   final String title;
   final String? repoId;
@@ -27,6 +30,9 @@ class PlayerMobileOnlinePage extends StatefulWidget {
   final String preferredLanguage;
   final Map<String, String>? headers;
   final String url;
+  final List<HomeRow> categories;
+  final int initialCategoryIndex;
+  final int initialChannelIndex;
 
   const PlayerMobileOnlinePage({
     super.key,
@@ -43,6 +49,9 @@ class PlayerMobileOnlinePage extends StatefulWidget {
     this.preferredLanguage = '',
     this.headers,
     this.url = '',
+    this.categories = const [],
+    this.initialCategoryIndex = 0,
+    this.initialChannelIndex = 0,
   });
 
   @override
@@ -61,21 +70,40 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
   bool _playing = false;
   String? _error;
   bool _showControls = true;
-  bool _showServers = false;
-  bool _showAudio = false;
+  bool _showGuide = false;
 
   late List<StreamServer> _servers;
   late int _serverIndex;
-  List<AudioTrack> _audioTracks = [];
-  AudioTrack? _selectedAudio;
+
+  late String _title;
+  late String? _contentId;
+  late String? _poster;
+  late String? _backdrop;
+  late String? _logo;
+  late String _contentType;
+
+  late int _catIndex;
+  late int _channelIndex;
+  late List<HomeRow> _categories;
 
   final FocusNode _rootFocus = FocusNode();
   final FocusNode _playFocus = FocusNode();
+  final FocusNode _guideFocus = FocusNode();
+  final FocusNode _favFocus = FocusNode();
   Timer? _hideTimer;
   Timer? _wakelockTimer;
 
   StreamServer? get _current =>
       _servers.isEmpty ? null : _servers[_serverIndex.clamp(0, _servers.length - 1)];
+
+  List<ContentItem> get _channels {
+    if (_categories.isEmpty ||
+        _catIndex < 0 ||
+        _catIndex >= _categories.length) {
+      return const [];
+    }
+    return _categories[_catIndex].items;
+  }
 
   @override
   void initState() {
@@ -83,10 +111,19 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
     SystemChrome.setPreferredOrientations(const [
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
-      DeviceOrientation.portraitUp,
     ]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     _keepAwake();
+    _title = widget.title;
+    _contentId = widget.contentId;
+    _poster = widget.poster;
+    _backdrop = widget.backdrop;
+    _logo = widget.logo;
+    _contentType = widget.contentType;
+    _categories = List.of(widget.categories);
+    _catIndex = widget.initialCategoryIndex.clamp(
+        0, (_categories.isEmpty ? 0 : _categories.length - 1));
+    _channelIndex = widget.initialChannelIndex;
     _servers = List.of(widget.servers);
     if (_servers.isEmpty && widget.url.isNotEmpty) {
       _servers = [
@@ -102,8 +139,8 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
         widget.initialServerIndex.clamp(0, (_servers.length - 1).clamp(0, 9999));
 
     if (widget.loadRepo != null &&
-        widget.contentId != null &&
-        widget.contentId!.isNotEmpty) {
+        _contentId != null &&
+        _contentId!.isNotEmpty) {
       _loadStreamsThenPlay();
     } else {
       _startCurrent();
@@ -129,8 +166,8 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
     try {
       final list = await ContentService.instance.getStreams(
         widget.loadRepo!,
-        widget.contentId!,
-        type: widget.contentType,
+        _contentId!,
+        type: _contentType,
       );
       if (!mounted) return;
       if (list.isEmpty) {
@@ -141,7 +178,7 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
         return;
       }
       _servers = list;
-      _serverIndex = _pickPreferred(list);
+      _serverIndex = 0;
       await _startCurrent();
     } catch (e) {
       if (mounted) {
@@ -151,17 +188,6 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
         });
       }
     }
-  }
-
-  int _pickPreferred(List<StreamServer> list) {
-    if (list.isEmpty) return 0;
-    final pref = widget.preferredLanguage.trim().toLowerCase();
-    if (pref.isEmpty) return 0;
-    for (var i = 0; i < list.length; i++) {
-      final lang = (list[i].language ?? '').toLowerCase();
-      if (lang.contains(pref) || pref.contains(lang)) return i;
-    }
-    return 0;
   }
 
   Future<void> _startCurrent() async {
@@ -181,23 +207,18 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
       _loading = true;
       _error = null;
       _buffering = true;
-      _audioTracks = [];
-      _selectedAudio = null;
     });
-
     try {
       await _disposePlayer();
       final player = Player(
         configuration: PlayerConfiguration(
-          title: widget.title,
-          // buffer más generoso para live
+          title: _title,
           bufferSize: 32 * 1024 * 1024,
         ),
       );
       final video = VideoController(player);
       _player = player;
       _video = video;
-
       _subs.add(player.stream.playing.listen((v) {
         if (!mounted) return;
         setState(() => _playing = v);
@@ -207,19 +228,8 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
         setState(() => _buffering = v);
       }));
       _subs.add(player.stream.error.listen((e) {
-        if (!mounted || e == null || e.toString().isEmpty) return;
+        if (!mounted || e.toString().isEmpty) return;
         debugPrint('[LiveTV] error: $e');
-        // Si falla, intentar siguiente servidor
-        unawaited(_tryNextServerOnError(e.toString()));
-      }));
-      _subs.add(player.stream.tracks.listen((tracks) async {
-        if (!mounted) return;
-        final audios = tracks.audio;
-        if (audios.isEmpty) return;
-        setState(() {
-          _audioTracks = List.of(audios);
-        });
-        await _selectBestAudio(audios);
       }));
 
       final hdrs = <String, String>{};
@@ -229,18 +239,13 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
           hdrs.putIfAbsent(e.key, () => e.value);
         }
       }
-      // Headers típicos de IPTV
       hdrs.putIfAbsent(
-          'User-Agent',
-          () =>
-              'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36');
-      hdrs.putIfAbsent('Connection', () => 'keep-alive');
-
-      await player.open(
-        Media(url, httpHeaders: hdrs),
-        play: true,
+        'User-Agent',
+        () =>
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
       );
 
+      await player.open(Media(url, httpHeaders: hdrs), play: true);
       if (!mounted) return;
       setState(() {
         _loading = false;
@@ -248,72 +253,48 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
         _playing = true;
       });
       _scheduleHide();
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _playFocus.requestFocus();
-      });
     } catch (e) {
-      debugPrint('[LiveTV] open failed: $e');
       if (!mounted) return;
-      final advanced = await _tryNextServerOnError(e.toString());
-      if (!advanced && mounted) {
-        setState(() {
-          _loading = false;
-          _error = 'No se pudo reproducir: $e';
-        });
-      }
+      setState(() {
+        _loading = false;
+        _error = 'No se pudo reproducir: $e';
+      });
     }
   }
 
-  Future<bool> _tryNextServerOnError(String err) async {
-    if (_servers.length <= 1) return false;
-    final next = (_serverIndex + 1) % _servers.length;
-    if (next == widget.initialServerIndex && _serverIndex != next) {
-      // ya dimos la vuelta
-    }
-    // Evitar bucle infinito: solo avanzar una vez por error de apertura
-    if (_serverIndex + 1 >= _servers.length) return false;
-    _serverIndex = _serverIndex + 1;
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Cambiando fuente… (${_serverIndex + 1}/${_servers.length})'),
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    }
-    await _startCurrent();
-    return true;
-  }
-
-  Future<void> _selectBestAudio(List<AudioTrack> audios) async {
-    if (_player == null || audios.isEmpty) return;
-    final pref = widget.preferredLanguage.trim().toLowerCase();
-    AudioTrack? pick;
-    if (pref.isNotEmpty) {
-      for (final t in audios) {
-        final lang = (t.language ?? t.title ?? t.id).toLowerCase();
-        if (lang.contains(pref) || pref.contains(lang)) {
-          pick = t;
-          break;
-        }
-      }
-    }
-    pick ??= audios.first;
-    try {
-      await _player!.setAudioTrack(pick);
-      if (mounted) setState(() => _selectedAudio = pick);
-    } catch (e) {
-      debugPrint('[LiveTV] setAudioTrack: $e');
-    }
-  }
-
-  Future<void> _switchServer(int i) async {
-    if (i < 0 || i >= _servers.length) return;
+  Future<void> _switchChannel(ContentItem item, int cat, int ch) async {
     setState(() {
-      _serverIndex = i;
-      _showServers = false;
+      _catIndex = cat;
+      _channelIndex = ch;
+      _contentId = item.id;
+      _title = item.currentProgram != null
+          ? '${item.title} · ${item.currentProgram}'
+          : item.title;
+      _poster = item.poster;
+      _backdrop = item.backdrop;
+      _logo = item.logo;
+      _contentType = item.type;
+      _showGuide = false;
+      _loading = true;
     });
-    await _startCurrent();
+    if (widget.loadRepo != null) {
+      await _loadStreamsThenPlay();
+    }
+  }
+
+  Future<void> _toggleFav() async {
+    final id = _contentId;
+    final repoId = widget.repoId;
+    if (id == null || repoId == null) return;
+    final lib = context.read<LibraryService>();
+    await lib.toggleFavorite(
+      repoId: repoId,
+      contentId: id,
+      title: _title,
+      poster: _logo ?? _poster,
+      type: _contentType.isNotEmpty ? _contentType : 'channel',
+    );
+    if (mounted) setState(() {});
   }
 
   Future<void> _togglePlay() async {
@@ -331,18 +312,14 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
     _hideTimer?.cancel();
     _hideTimer = Timer(const Duration(seconds: 5), () {
       if (!mounted) return;
-      if (_showServers || _showAudio) return;
+      if (_showGuide) return;
       setState(() => _showControls = false);
-      _rootFocus.requestFocus();
     });
   }
 
   void _showUi() {
     setState(() => _showControls = true);
     _scheduleHide();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _playFocus.requestFocus();
-    });
   }
 
   Future<void> _disposePlayer() async {
@@ -355,11 +332,9 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
     final p = _player;
     _player = null;
     _video = null;
-    if (p != null) {
-      try {
-        await p.dispose();
-      } catch (_) {}
-    }
+    try {
+      await p?.dispose();
+    } catch (_) {}
   }
 
   @override
@@ -368,6 +343,8 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
     _wakelockTimer?.cancel();
     _rootFocus.dispose();
     _playFocus.dispose();
+    _guideFocus.dispose();
+    _favFocus.dispose();
     unawaited(_disposePlayer());
     WakelockPlus.disable();
     SystemChrome.setPreferredOrientations(const [
@@ -386,11 +363,8 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
     if (key == LogicalKeyboardKey.goBack ||
         key == LogicalKeyboardKey.escape ||
         key == LogicalKeyboardKey.browserBack) {
-      if (_showServers || _showAudio) {
-        setState(() {
-          _showServers = false;
-          _showAudio = false;
-        });
+      if (_showGuide) {
+        setState(() => _showGuide = false);
         return KeyEventResult.handled;
       }
       if (_showControls) {
@@ -400,10 +374,20 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
       Navigator.of(context).maybePop();
       return KeyEventResult.handled;
     }
+    if (key == LogicalKeyboardKey.channelUp ||
+        key == LogicalKeyboardKey.mediaTrackPrevious) {
+      _zap(-1);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.channelDown ||
+        key == LogicalKeyboardKey.mediaTrackNext) {
+      _zap(1);
+      return KeyEventResult.handled;
+    }
     if (!_showControls &&
+        !_showGuide &&
         (key == LogicalKeyboardKey.select ||
             key == LogicalKeyboardKey.enter ||
-            key == LogicalKeyboardKey.space ||
             key == LogicalKeyboardKey.arrowUp ||
             key == LogicalKeyboardKey.arrowDown ||
             key == LogicalKeyboardKey.arrowLeft ||
@@ -411,26 +395,33 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
       _showUi();
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.mediaPlayPause ||
-        key == LogicalKeyboardKey.mediaPlay ||
-        key == LogicalKeyboardKey.mediaPause) {
+    if (key == LogicalKeyboardKey.mediaPlayPause) {
       unawaited(_togglePlay());
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
   }
 
+  void _zap(int dir) {
+    final items = _channels;
+    if (items.isEmpty) return;
+    final next = (_channelIndex + dir + items.length) % items.length;
+    unawaited(_switchChannel(items[next], _catIndex, next));
+  }
+
   @override
   Widget build(BuildContext context) {
+    final repoId = widget.repoId ?? '';
+    final isFav = _contentId != null &&
+        repoId.isNotEmpty &&
+        context.watch<LibraryService>().isFavorite(repoId, _contentId!);
+
     return PopScope(
-      canPop: !(_showServers || _showAudio || _showControls),
+      canPop: !(_showGuide || _showControls),
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
-        if (_showServers || _showAudio) {
-          setState(() {
-            _showServers = false;
-            _showAudio = false;
-          });
+        if (_showGuide) {
+          setState(() => _showGuide = false);
           return;
         }
         if (_showControls) {
@@ -448,6 +439,7 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: () {
+              if (_showGuide) return;
               if (_showControls) {
                 setState(() => _showControls = false);
               } else {
@@ -463,29 +455,26 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
                     controls: NoVideoControls,
                     fit: BoxFit.contain,
                   )
-                else if (widget.backdrop != null || widget.poster != null)
+                else if (_backdrop != null || _poster != null)
                   CachedNetworkImage(
-                    imageUrl: (widget.backdrop ?? widget.poster)!,
+                    imageUrl: (_backdrop ?? _poster)!,
                     fit: BoxFit.cover,
                     color: Colors.black54,
                     colorBlendMode: BlendMode.darken,
                   ),
                 if (_loading || _buffering)
                   const Center(
-                    child: SizedBox(
-                      width: 48,
-                      height: 48,
-                      child: CircularProgressIndicator(
-                        color: accent,
-                        strokeWidth: 3,
-                      ),
-                    ),
+                    child: CircularProgressIndicator(
+                        color: accent, strokeWidth: 3),
                   ),
-                if (_error != null) _errorView(),
-                if (_showControls && _error == null) _controlsOverlay(),
-                if (_showServers) _serversPanel(),
-                if (_showAudio) _audioPanel(),
-                // Badge EN VIVO
+                if (_error != null)
+                  Center(
+                    child: Text(_error!,
+                        style: const TextStyle(color: Colors.white70)),
+                  ),
+                if (_showControls && _error == null && !_showGuide)
+                  _controls(isFav),
+                if (_showGuide) _guidePanel(),
                 Positioned(
                   top: 16,
                   left: 20,
@@ -503,7 +492,6 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
                           color: Colors.white,
                           fontWeight: FontWeight.w800,
                           fontSize: 12,
-                          letterSpacing: 0.8,
                         ),
                       ),
                     ),
@@ -517,337 +505,294 @@ class _PlayerMobileOnlinePageState extends State<PlayerMobileOnlinePage> {
     );
   }
 
-  Widget _errorView() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
+  Widget _controls(bool isFav) {
+    return Positioned.fill(
+      child: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Color(0x99000000),
+              Colors.transparent,
+              Color(0xCC000000),
+            ],
+            stops: [0, 0.35, 1],
+          ),
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                child: Row(
+                  children: [
+                    const SizedBox(width: 72),
+                    Expanded(
+                      child: Text(
+                        _title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Spacer(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 28),
+                child: Row(
+                  children: [
+                    _btn(
+                      focusNode: _playFocus,
+                      icon: _playing
+                          ? Icons.pause_rounded
+                          : Icons.play_arrow_rounded,
+                      onTap: () => unawaited(_togglePlay()),
+                    ),
+                    const SizedBox(width: 14),
+                    if (_categories.isNotEmpty)
+                      _btn(
+                        focusNode: _guideFocus,
+                        icon: Icons.list_alt_rounded,
+                        label: 'Canales',
+                        onTap: () => setState(() {
+                          _showGuide = true;
+                          _showControls = false;
+                        }),
+                      ),
+                    if (_categories.isNotEmpty) const SizedBox(width: 14),
+                    _btn(
+                      focusNode: _favFocus,
+                      icon: isFav ? Icons.favorite : Icons.favorite_border,
+                      label: isFav ? 'Favorito' : 'Fav',
+                      onTap: () => unawaited(_toggleFav()),
+                    ),
+                    const Spacer(),
+                    Text(
+                      _playing ? 'EN EMISIÓN' : 'PAUSA',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.7),
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _btn({
+    FocusNode? focusNode,
+    required IconData icon,
+    String? label,
+    required VoidCallback onTap,
+  }) {
+    return Focusable(
+      focusNode: focusNode,
+      onTap: onTap,
+      builder: (focused) => AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        padding: EdgeInsets.symmetric(
+          horizontal: label != null ? 16 : 12,
+          vertical: 12,
+        ),
+        decoration: BoxDecoration(
+          color: focused ? accent : Colors.white.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.wifi_tethering_error, color: Colors.white54, size: 48),
-            const SizedBox(height: 16),
-            Text(
-              _error ?? 'Error',
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white70, fontSize: 14),
-            ),
-            const SizedBox(height: 20),
-            Wrap(
-              spacing: 12,
-              children: [
-                Focus(
-                  autofocus: true,
-                  onKeyEvent: (n, e) {
-                    if (e is! KeyDownEvent) return KeyEventResult.ignored;
-                    if (e.logicalKey == LogicalKeyboardKey.select ||
-                        e.logicalKey == LogicalKeyboardKey.enter) {
-                      unawaited(_startCurrent());
-                      return KeyEventResult.handled;
-                    }
-                    return KeyEventResult.ignored;
-                  },
-                  child: Builder(builder: (ctx) {
-                    final f = Focus.of(ctx).hasFocus;
-                    return GestureDetector(
-                      onTap: () => unawaited(_startCurrent()),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 18, vertical: 12),
-                        decoration: BoxDecoration(
-                          color: f ? Colors.white : accent,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                              color: f ? accent : Colors.transparent, width: 2),
-                        ),
-                        child: Text(
-                          'Reintentar',
-                          style: TextStyle(
-                            color: f ? Colors.black : Colors.white,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                    );
-                  }),
+            Icon(icon, color: Colors.white, size: 26),
+            if (label != null) ...[
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 14,
                 ),
-                if (_servers.length > 1)
-                  GestureDetector(
-                    onTap: () {
-                      final n = (_serverIndex + 1) % _servers.length;
-                      unawaited(_switchServer(n));
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 18, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.white12,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Text('Otra fuente',
-                          style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w600)),
-                    ),
-                  ),
-              ],
-            ),
+              ),
+            ],
           ],
         ),
       ),
     );
   }
 
-  Widget _controlsOverlay() {
+  /// Guía: columna categorías + columna canales, encima del video.
+  Widget _guidePanel() {
     return Positioned.fill(
-      child: IgnorePointer(
-        ignoring: false,
-        child: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Color(0x99000000),
-                Colors.transparent,
-                Color(0xCC000000),
-              ],
-              stops: [0, 0.35, 1],
-            ),
-          ),
-          child: SafeArea(
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                  child: Row(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.72),
+        child: SafeArea(
+          child: Row(
+            children: [
+              // Categorías
+              SizedBox(
+                width: 220,
+                child: Container(
+                  color: const Color(0xFF0E1218),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const SizedBox(width: 72), // espacio badge EN VIVO
-                      Expanded(
+                      const Padding(
+                        padding: EdgeInsets.fromLTRB(16, 16, 16, 10),
                         child: Text(
-                          widget.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
+                          'Categorías',
+                          style: TextStyle(
+                            color: Colors.white70,
                             fontWeight: FontWeight.w700,
                           ),
                         ),
                       ),
-                      if (_current != null)
-                        Text(
-                          _current!.name,
-                          style: const TextStyle(
-                              color: Colors.white54, fontSize: 12),
-                        ),
-                    ],
-                  ),
-                ),
-                const Spacer(),
-                // Sin barra de progreso (live)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-                  child: Row(
-                    children: [
-                      _tvBtn(
-                        focusNode: _playFocus,
-                        icon: _playing
-                            ? Icons.pause_rounded
-                            : Icons.play_arrow_rounded,
-                        onTap: () => unawaited(_togglePlay()),
-                      ),
-                      const SizedBox(width: 12),
-                      if (_servers.length > 1)
-                        _tvBtn(
-                          icon: Icons.dns_rounded,
-                          onTap: () => setState(() {
-                            _showServers = true;
-                            _showAudio = false;
-                          }),
-                        ),
-                      if (_servers.length > 1) const SizedBox(width: 12),
-                      if (_audioTracks.length > 1)
-                        _tvBtn(
-                          icon: Icons.audiotrack_rounded,
-                          onTap: () => setState(() {
-                            _showAudio = true;
-                            _showServers = false;
-                          }),
-                        ),
-                      const Spacer(),
-                      Text(
-                        _playing ? 'EN EMISIÓN' : 'PAUSA',
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.7),
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 1,
+                      Expanded(
+                        child: ListView.builder(
+                          itemCount: _categories.length,
+                          itemBuilder: (context, i) {
+                            final sel = i == _catIndex;
+                            return Focusable(
+                              autofocus: i == _catIndex,
+                              onTap: () => setState(() {
+                                _catIndex = i;
+                                _channelIndex = 0;
+                              }),
+                              builder: (focused) {
+                                final on = sel || focused;
+                                return Container(
+                                  margin: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 3),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 14, vertical: 12),
+                                  decoration: BoxDecoration(
+                                    color: on ? accent : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Text(
+                                    _categories[i].title,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: on
+                                          ? Colors.white
+                                          : Colors.white70,
+                                      fontWeight: on
+                                          ? FontWeight.w700
+                                          : FontWeight.w500,
+                                    ),
+                                  ),
+                                );
+                              },
+                            );
+                          },
                         ),
                       ),
                     ],
                   ),
                 ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _tvBtn({
-    FocusNode? focusNode,
-    required IconData icon,
-    required VoidCallback onTap,
-  }) {
-    return Focus(
-      focusNode: focusNode,
-      onKeyEvent: (node, event) {
-        if (event is! KeyDownEvent) return KeyEventResult.ignored;
-        final key = event.logicalKey;
-        if (key == LogicalKeyboardKey.select ||
-            key == LogicalKeyboardKey.enter ||
-            key == LogicalKeyboardKey.space) {
-          onTap();
-          return KeyEventResult.handled;
-        }
-        return KeyEventResult.ignored;
-      },
-      child: Builder(builder: (ctx) {
-        final f = Focus.of(ctx).hasFocus;
-        return GestureDetector(
-          onTap: onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
-            width: 48,
-            height: 48,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: f ? Colors.white : Colors.white.withValues(alpha: 0.12),
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: f ? accent : Colors.white24,
-                width: f ? 2.5 : 1,
               ),
-            ),
-            child: Icon(icon, color: f ? Colors.black : Colors.white, size: 26),
-          ),
-        );
-      }),
-    );
-  }
-
-  Widget _serversPanel() {
-    return _sidePanel(
-      title: 'Fuentes / Servidores',
-      onClose: () => setState(() => _showServers = false),
-      children: [
-        for (var i = 0; i < _servers.length; i++)
-          ListTile(
-            autofocus: i == _serverIndex,
-            selected: i == _serverIndex,
-            selectedTileColor: Colors.white10,
-            title: Text(_servers[i].name,
-                style: TextStyle(
-                    color: i == _serverIndex ? accent : Colors.white,
-                    fontWeight: FontWeight.w600)),
-            subtitle: Text(
-              [
-                if ((_servers[i].quality ?? '').isNotEmpty) _servers[i].quality!,
-                if ((_servers[i].language ?? '').isNotEmpty)
-                  _servers[i].language!,
-              ].join(' · '),
-              style: const TextStyle(color: Colors.white54, fontSize: 12),
-            ),
-            trailing: i == _serverIndex
-                ? const Icon(Icons.check_circle, color: accent)
-                : null,
-            onTap: () => unawaited(_switchServer(i)),
-          ),
-      ],
-    );
-  }
-
-  Widget _audioPanel() {
-    return _sidePanel(
-      title: 'Audio',
-      onClose: () => setState(() => _showAudio = false),
-      children: [
-        for (final t in _audioTracks)
-          ListTile(
-            selected: _selectedAudio?.id == t.id,
-            selectedTileColor: Colors.white10,
-            leading: Icon(Icons.audiotrack,
-                color: _selectedAudio?.id == t.id ? accent : Colors.white54),
-            title: Text(
-              t.title?.isNotEmpty == true
-                  ? t.title!
-                  : (t.language ?? t.id),
-              style: TextStyle(
-                color: _selectedAudio?.id == t.id ? accent : Colors.white,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            onTap: () async {
-              try {
-                await _player?.setAudioTrack(t);
-                setState(() {
-                  _selectedAudio = t;
-                  _showAudio = false;
-                });
-              } catch (_) {}
-            },
-          ),
-      ],
-    );
-  }
-
-  Widget _sidePanel({
-    required String title,
-    required VoidCallback onClose,
-    required List<Widget> children,
-  }) {
-    return Positioned.fill(
-      child: GestureDetector(
-        onTap: onClose,
-        child: Container(
-          color: Colors.black54,
-          alignment: Alignment.centerRight,
-          child: GestureDetector(
-            onTap: () {},
-            child: Material(
-              color: const Color(0xF0141A22),
-              child: SafeArea(
-                child: SizedBox(
-                  width: 360,
+              // Canales
+              SizedBox(
+                width: 320,
+                child: Container(
+                  color: const Color(0xFF12161E),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Text(title,
-                                  style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w700)),
-                            ),
-                            IconButton(
-                              onPressed: onClose,
-                              icon: const Icon(Icons.close,
-                                  color: Colors.white70),
-                            ),
-                          ],
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
+                        child: Text(
+                          '${_channels.length} canales',
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
-                      Expanded(child: ListView(children: children)),
+                      Expanded(
+                        child: ListView.builder(
+                          itemCount: _channels.length,
+                          itemBuilder: (context, i) {
+                            final item = _channels[i];
+                            final sel = i == _channelIndex;
+                            return Focusable(
+                              onTap: () => unawaited(
+                                  _switchChannel(item, _catIndex, i)),
+                              builder: (focused) {
+                                final on = sel || focused;
+                                return Container(
+                                  margin: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 3),
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: on ? accent : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      ClipRRect(
+                                        borderRadius:
+                                            BorderRadius.circular(6),
+                                        child: SizedBox(
+                                          width: 52,
+                                          height: 34,
+                                          child: CachedPoster(
+                                            url: item.logo ?? item.poster,
+                                            fit: BoxFit.cover,
+                                            title: item.title,
+                                            sheenStrength: 0,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          item.title,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: on
+                                                ? Colors.white
+                                                : Colors.white70,
+                                            fontWeight: on
+                                                ? FontWeight.w700
+                                                : FontWeight.w500,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            );
+                          },
+                        ),
+                      ),
                     ],
                   ),
                 ),
               ),
-            ),
+              // resto: toque para cerrar
+              Expanded(
+                child: GestureDetector(
+                  onTap: () => setState(() => _showGuide = false),
+                  child: const ColoredBox(color: Colors.transparent),
+                ),
+              ),
+            ],
           ),
         ),
       ),

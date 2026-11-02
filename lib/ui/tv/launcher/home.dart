@@ -24,6 +24,7 @@ import '../widgets/focusable.dart';
 import '../widgets/glass.dart';
 import '../repo/player/player.dart';
 import 'downloads_page.dart';
+import 'salas_page.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  TMDB (fondos)
@@ -90,7 +91,6 @@ class _Tmdb {
       bd.sort((a, b) => ((b['vote_average'] as num?) ?? 0)
           .compareTo((a['vote_average'] as num?) ?? 0));
       final path = bd.first['file_path'];
-      // w1280 = buena calidad HD para fondos rotativos (original es demasiado pesado)
       return path is String ? 'https://image.tmdb.org/t/p/w1280$path' : null;
     }));
     return urls.whereType<String>().toSet().toList()..shuffle(rnd);
@@ -180,7 +180,8 @@ class _TmdbBackgroundState extends State<_TmdbBackground> {
 
   Future<List<String>> _loadLolBackdrops() async {
     try {
-      final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 8);
       final req = await client.getUrl(Uri.parse(
           'https://raw.githubusercontent.com/LOLapptv/addons/main/backdrop_manifest.json'));
       final res = await req.close().timeout(const Duration(seconds: 12));
@@ -252,13 +253,16 @@ class _TmdbBackgroundState extends State<_TmdbBackground> {
                     child: blur > 0.5
                         ? ImageFiltered(
                             imageFilter: ImageFilter.blur(
-                                sigmaX: blur, sigmaY: blur, tileMode: TileMode.clamp),
+                                sigmaX: blur,
+                                sigmaY: blur,
+                                tileMode: TileMode.clamp),
                             child: CachedNetworkImage(
                               imageUrl: _urls[_idx],
                               fit: BoxFit.cover,
                               fadeInDuration: Duration.zero,
                               fadeOutDuration: Duration.zero,
-                              errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                              errorWidget: (_, __, ___) =>
+                                  const SizedBox.shrink(),
                             ),
                           )
                         : CachedNetworkImage(
@@ -266,7 +270,8 @@ class _TmdbBackgroundState extends State<_TmdbBackground> {
                             fit: BoxFit.cover,
                             fadeInDuration: Duration.zero,
                             fadeOutDuration: Duration.zero,
-                            errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                            errorWidget: (_, __, ___) =>
+                                const SizedBox.shrink(),
                           ),
                   ),
           ),
@@ -307,12 +312,16 @@ class _LauncherHomeState extends State<LauncherHome> {
   final Map<String, String> _repoNewsStyle = {};
   bool _loadingNews = false;
 
-  /// false = vista principal (historial + dock), true = vista de novedades
   bool _newsMode = false;
   final FocusNode _dockFocus = FocusNode(debugLabel: 'dock_first');
   final FocusNode _newsFirstFocus = FocusNode(debugLabel: 'news_first');
   final FocusNode _historyFirstFocus = FocusNode(debugLabel: 'history_first');
   final FocusNode _toolsFirstFocus = FocusNode(debugLabel: 'tools_first');
+
+  /// Un FocusNode por fila de novedades (primer ítem de cada slider).
+  final List<FocusNode> _newsRowFirstNodes = [];
+
+  final ScrollController _newsScroll = ScrollController();
 
   RepoManager? _manager;
   String _lastRepoSignature = '';
@@ -326,12 +335,10 @@ class _LauncherHomeState extends State<LauncherHome> {
 
   Set<String> _favAppIds = {};
 
-  /// Long-press 3 s en remoto para favoritos (no abrir repo).
   Timer? _appLongPressTimer;
   bool _appLongPressFired = false;
   String? _appLongPressRepoId;
 
-  /// Hay ítems de historial visibles (para ↑ desde apps).
   bool _hasHistory = false;
 
   @override
@@ -345,7 +352,6 @@ class _LauncherHomeState extends State<LauncherHome> {
       _loadFavoriteApps();
       _loadPlayerHistorial();
       _loadNews();
-      // Foco inicial: primera app del dock
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _dockFocus.requestFocus();
       });
@@ -360,8 +366,52 @@ class _LauncherHomeState extends State<LauncherHome> {
     _newsFirstFocus.dispose();
     _historyFirstFocus.dispose();
     _toolsFirstFocus.dispose();
+    for (final n in _newsRowFirstNodes) {
+      n.dispose();
+    }
+    _newsRowFirstNodes.clear();
+    _newsScroll.dispose();
     _focusScope.dispose();
     super.dispose();
+  }
+
+  void _syncNewsRowNodes(int rowCount) {
+    while (_newsRowFirstNodes.length > rowCount) {
+      _newsRowFirstNodes.removeLast().dispose();
+    }
+    while (_newsRowFirstNodes.length < rowCount) {
+      final i = _newsRowFirstNodes.length;
+      // Fila 0 reutiliza _newsFirstFocus
+      if (i == 0) {
+        _newsRowFirstNodes.add(_newsFirstFocus);
+      } else {
+        _newsRowFirstNodes.add(FocusNode(debugLabel: 'news_row_$i'));
+      }
+    }
+  }
+
+  void _focusNewsRow(int row) {
+    if (row < 0 || row >= _newsRowFirstNodes.length) return;
+    final node = _newsRowFirstNodes[row];
+    void go() {
+      if (!mounted) return;
+      node.requestFocus();
+      final ctx = node.context;
+      if (ctx != null && ctx.mounted) {
+        Scrollable.ensureVisible(
+          ctx,
+          alignment: 0.25,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      }
+    }
+
+    go();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      go();
+      WidgetsBinding.instance.addPostFrameCallback((_) => go());
+    });
   }
 
   String _repoSignature(RepoManager? m) {
@@ -511,8 +561,9 @@ class _LauncherHomeState extends State<LauncherHome> {
             map[mapKey] = m;
           } else {
             final tNew = (m['updatedAt'] ?? m['timestamp'] ?? '').toString();
-            final tOld = (existing['updatedAt'] ?? existing['timestamp'] ?? '')
-                .toString();
+            final tOld =
+                (existing['updatedAt'] ?? existing['timestamp'] ?? '')
+                    .toString();
             if (tNew.compareTo(tOld) >= 0) {
               map[mapKey] = m;
             }
@@ -628,6 +679,7 @@ class _LauncherHomeState extends State<LauncherHome> {
           _repoNames.clear();
           _repoNewsStyle.clear();
           _loadingNews = false;
+          _syncNewsRowNodes(0);
         });
       }
       _loadingNewsJob = false;
@@ -681,14 +733,16 @@ class _LauncherHomeState extends State<LauncherHome> {
         ..clear()
         ..addAll(styles);
       _loadingNews = false;
+      _syncNewsRowNodes(byRepo.length);
     });
     _loadingNewsJob = false;
   }
 
   String _styleForItem(String repoId, Map n) {
-    final raw = (n['imageStyle'] ?? n['style'] ?? n['card'] ?? n['layout'] ?? '')
-        .toString()
-        .toLowerCase();
+    final raw =
+        (n['imageStyle'] ?? n['style'] ?? n['card'] ?? n['layout'] ?? '')
+            .toString()
+            .toLowerCase();
     if (raw.contains('banner') ||
         raw.contains('back') ||
         raw.contains('horizontal') ||
@@ -733,7 +787,8 @@ class _LauncherHomeState extends State<LauncherHome> {
 
     final title = (pe?['title'] ?? e.title).toString();
     final poster = (pe?['poster'] ?? e.poster)?.toString();
-    final backdrop = (pe?['backdrop'] ?? pe?['poster'] ?? e.poster)?.toString();
+    final backdrop =
+        (pe?['backdrop'] ?? pe?['poster'] ?? e.poster)?.toString();
     final logo = (pe?['logo'] ?? '')?.toString();
     final type = (pe?['type'] ?? pe?['contentType'] ?? e.type).toString();
     final pos = (pe?['positionMs'] as num?)?.toInt() ??
@@ -819,7 +874,6 @@ class _LauncherHomeState extends State<LauncherHome> {
 
   bool _pageSwitching = false;
 
-  /// Transición vertical SOLO aquí (no hay PageView → el foco no mueve scroll).
   Future<void> _goNews() async {
     if (_newsMode || _pageSwitching) return;
     _pageSwitching = true;
@@ -830,7 +884,7 @@ class _LauncherHomeState extends State<LauncherHome> {
       return;
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _newsFirstFocus.requestFocus();
+      if (mounted) _focusNewsRow(0);
     });
     _pageSwitching = false;
   }
@@ -850,7 +904,6 @@ class _LauncherHomeState extends State<LauncherHome> {
     _pageSwitching = false;
   }
 
-  /// Solo KeyDown de flecha abajo (no KeyRepeat ni otras teclas).
   bool _isArrowDownPress(KeyEvent e) =>
       e is KeyDownEvent &&
       e is! KeyRepeatEvent &&
@@ -876,7 +929,6 @@ class _LauncherHomeState extends State<LauncherHome> {
       k == LogicalKeyboardKey.enter ||
       k == LogicalKeyboardKey.space;
 
-  /// ↑ desde cualquier app del dock → primer ítem del historial (si hay).
   void _focusHistoryFromApps() {
     if (!_hasHistory || _newsMode || _pageSwitching) return;
     void tryFocus() {
@@ -884,11 +936,11 @@ class _LauncherHomeState extends State<LauncherHome> {
         _historyFirstFocus.requestFocus();
       }
     }
+
     tryFocus();
     WidgetsBinding.instance.addPostFrameCallback((_) => tryFocus());
   }
 
-  /// ↑ desde historial → primera herramienta del header.
   void _focusToolsFromHistory() {
     if (_newsMode || _pageSwitching) return;
     void tryFocus() {
@@ -896,11 +948,11 @@ class _LauncherHomeState extends State<LauncherHome> {
         _toolsFirstFocus.requestFocus();
       }
     }
+
     tryFocus();
     WidgetsBinding.instance.addPostFrameCallback((_) => tryFocus());
   }
 
-  /// ↓ desde herramientas → historial (si hay) o dock.
   void _focusDownFromTools() {
     if (_newsMode || _pageSwitching) return;
     if (_hasHistory) {
@@ -913,7 +965,6 @@ class _LauncherHomeState extends State<LauncherHome> {
     }
   }
 
-  /// ↓ desde cualquier app del dock → primer ítem del primer slider de novedades.
   KeyEventResult _onDockKey(FocusNode node, KeyEvent e) {
     if (_pageSwitching || _newsMode) return KeyEventResult.ignored;
     if (_isArrowDownPress(e)) {
@@ -931,15 +982,6 @@ class _LauncherHomeState extends State<LauncherHome> {
     return KeyEventResult.ignored;
   }
 
-  KeyEventResult _onFirstNewsKey(FocusNode node, KeyEvent e) {
-    if (_pageSwitching || !_newsMode) return KeyEventResult.ignored;
-    if (_isArrowUpPress(e)) {
-      unawaited(_goHome());
-      return KeyEventResult.handled;
-    }
-    return KeyEventResult.ignored;
-  }
-
   KeyEventResult _onNewsBackKey(FocusNode node, KeyEvent e) {
     if (e is! KeyDownEvent || e is KeyRepeatEvent) return KeyEventResult.ignored;
     if (!_newsMode || _pageSwitching) return KeyEventResult.ignored;
@@ -949,6 +991,55 @@ class _LauncherHomeState extends State<LauncherHome> {
       unawaited(_goHome());
       return KeyEventResult.handled;
     }
+    return KeyEventResult.ignored;
+  }
+
+  /// Teclas verticales de un ítem de novedades (cualquier posición en la fila).
+  KeyEventResult _onNewsItemKey({
+    required int rowIndex,
+    required int itemIndex,
+    required int itemCount,
+    required int rowCount,
+    required KeyEvent event,
+    required VoidCallback open,
+  }) {
+    if (event is! KeyDownEvent || event is KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+
+    // ↑
+    if (_isArrowUpPress(event)) {
+      if (rowIndex == 0) {
+        // Solo el primer slider vuelve al home
+        unawaited(_goHome());
+      } else {
+        _focusNewsRow(rowIndex - 1);
+      }
+      return KeyEventResult.handled;
+    }
+
+    // ↓ → primer ítem del siguiente slider
+    if (_isArrowDownPress(event)) {
+      if (rowIndex < rowCount - 1) {
+        _focusNewsRow(rowIndex + 1);
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.handled; // última fila: no sale
+    }
+
+    // ← / → en extremos se quedan
+    if (itemIndex == 0 && _isArrowLeftPress(event)) {
+      return KeyEventResult.handled;
+    }
+    if (itemIndex == itemCount - 1 && _isArrowRightPress(event)) {
+      return KeyEventResult.handled;
+    }
+
+    if (_isSelectKey(event.logicalKey)) {
+      open();
+      return KeyEventResult.handled;
+    }
+
     return KeyEventResult.ignored;
   }
 
@@ -988,7 +1079,6 @@ class _LauncherHomeState extends State<LauncherHome> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    // Home: se desliza hacia arriba al ir a novedades
                     AnimatedSlide(
                       duration: const Duration(milliseconds: 380),
                       curve: Curves.easeOutCubic,
@@ -998,7 +1088,6 @@ class _LauncherHomeState extends State<LauncherHome> {
                         child: _homePage(apps, watching),
                       ),
                     ),
-                    // Novedades: entra desde abajo solo con ↓ explícito
                     AnimatedSlide(
                       duration: const Duration(milliseconds: 380),
                       curve: Curves.easeOutCubic,
@@ -1051,6 +1140,13 @@ class _LauncherHomeState extends State<LauncherHome> {
                 ),
                 const SizedBox(width: 10),
                 _IconBtn(
+                  Icons.groups_rounded,
+                  () => Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => const TvSalasPage())),
+                  onArrowDown: _focusDownFromTools,
+                ),
+                const SizedBox(width: 10),
+                _IconBtn(
                   Icons.download_rounded,
                   () => Navigator.push(
                       context,
@@ -1089,8 +1185,8 @@ class _LauncherHomeState extends State<LauncherHome> {
                   height: 110,
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 28, vertical: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 28, vertical: 8),
                     itemCount: watching.length.clamp(0, 18),
                     separatorBuilder: (_, __) => const SizedBox(width: 14),
                     itemBuilder: (context, i) {
@@ -1109,11 +1205,6 @@ class _LauncherHomeState extends State<LauncherHome> {
                       } else if (progress > 0.02) {
                         subtitle = '${(progress * 100).round()}%';
                       }
-                      // ↑ historial → herramientas del header
-                      // ↓ historial → primera app del dock
-                      // ← / → en extremos se queda
-                      // El focusNode va en el Focus externo; el visual usa
-                      // Focus.of(ctx).hasFocus (no el Focusable interno).
                       return Focus(
                         focusNode: isFirst ? _historyFirstFocus : null,
                         onKeyEvent: (node, event) {
@@ -1173,11 +1264,9 @@ class _LauncherHomeState extends State<LauncherHome> {
     return Focus(
       canRequestFocus: false,
       skipTraversal: true,
-      onKeyEvent: (node, event) {
-        // Solo Back / Escape → home. ↑ NO global: solo el primer slider.
-        return _onNewsBackKey(node, event);
-      },
+      onKeyEvent: (node, event) => _onNewsBackKey(node, event),
       child: SingleChildScrollView(
+        controller: _newsScroll,
         physics: const BouncingScrollPhysics(),
         padding: const EdgeInsets.only(bottom: 24, top: 16),
         child: Column(
@@ -1208,6 +1297,13 @@ class _LauncherHomeState extends State<LauncherHome> {
         ),
       ];
     }
+
+    // Asegurar nodos de fila
+    final rowCount = _newsByRepo.length;
+    if (_newsRowFirstNodes.length != rowCount) {
+      _syncNewsRowNodes(rowCount);
+    }
+
     final rows = <Widget>[];
     var entryIndex = 0;
     for (final entry in _newsByRepo.entries) {
@@ -1217,7 +1313,7 @@ class _LauncherHomeState extends State<LauncherHome> {
       final defaultStyle = _repoNewsStyle[repoId] ?? 'poster';
       final isBanner = defaultStyle == 'banner';
       final rowH = isBanner ? 100.0 : 124.0;
-      final isFirstRow = entryIndex == 0;
+      final rowIndex = entryIndex;
       entryIndex++;
 
       rows.add(Column(
@@ -1228,7 +1324,8 @@ class _LauncherHomeState extends State<LauncherHome> {
             height: rowH,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 6),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 32, vertical: 6),
               itemCount: items.length,
               separatorBuilder: (_, __) => const SizedBox(width: 12),
               itemBuilder: (context, i) {
@@ -1238,7 +1335,7 @@ class _LauncherHomeState extends State<LauncherHome> {
                 final title = (n['title'] ?? n['text'] ?? '').toString();
                 final img = _imageForNews(n, style);
                 final isFirstItem = i == 0;
-                final isLastItem = i == items.length - 1;
+
                 void openNews() {
                   final mgr = context.read<RepoManager>();
                   InstalledRepo? repo;
@@ -1251,74 +1348,36 @@ class _LauncherHomeState extends State<LauncherHome> {
                   if (repo != null) _openRepo(repo);
                 }
 
-                final isFirst = isFirstRow && i == 0;
-                if (isFirst) {
-                  // Primer ítem del primer slider: ↑ → apps
-                  return Focus(
-                    focusNode: _newsFirstFocus,
-                    onKeyEvent: (node, event) {
-                      final up = _onFirstNewsKey(node, event);
-                      if (up == KeyEventResult.handled) return up;
-                      if (isFirstItem && _isArrowLeftPress(event)) {
-                        return KeyEventResult.handled;
-                      }
-                      if (isLastItem && _isArrowRightPress(event)) {
-                        return KeyEventResult.handled;
-                      }
-                      if (event is KeyDownEvent) {
-                        final k = event.logicalKey;
-                        if (k == LogicalKeyboardKey.select ||
-                            k == LogicalKeyboardKey.enter ||
-                            k == LogicalKeyboardKey.space) {
-                          openNews();
-                          return KeyEventResult.handled;
-                        }
-                      }
-                      return KeyEventResult.ignored;
-                    },
-                    child: Builder(
-                      builder: (ctx) {
-                        final f = Focus.of(ctx).hasFocus;
-                        return GestureDetector(
-                          onTap: openNews,
-                          child: _NewsCard(
-                            width: banner ? 150.0 : 78.0,
-                            height: banner ? 84.0 : 108.0,
-                            imageUrl: img.isEmpty ? null : img,
-                            title: title.isNotEmpty ? title : 'Novedad',
-                            focused: f,
-                          ),
-                        );
-                      },
-                    ),
-                  );
-                }
-                // Resto del primer slider: ↑ también vuelve a apps
-                // Otros sliders: ↑ NO vuelve (solo navegación normal entre filas)
+                // Primer ítem de la fila: nodo dedicado (hereda ↑/↓ entre filas)
+                final FocusNode? rowNode = isFirstItem &&
+                        rowIndex < _newsRowFirstNodes.length
+                    ? _newsRowFirstNodes[rowIndex]
+                    : null;
+
                 return Focus(
-                  onKeyEvent: (node, event) {
-                    if (isFirstRow && _isArrowUpPress(event)) {
-                      unawaited(_goHome());
-                      return KeyEventResult.handled;
-                    }
-                    if (isFirstItem && _isArrowLeftPress(event)) {
-                      return KeyEventResult.handled;
-                    }
-                    if (isLastItem && _isArrowRightPress(event)) {
-                      return KeyEventResult.handled;
-                    }
-                    return KeyEventResult.ignored;
-                  },
-                  child: Focusable(
-                    autofocus: false,
-                    onTap: openNews,
-                    builder: (f) => _NewsCard(
-                      width: banner ? 150.0 : 78.0,
-                      height: banner ? 84.0 : 108.0,
-                      imageUrl: img.isEmpty ? null : img,
-                      title: title.isNotEmpty ? title : 'Novedad',
-                      focused: f,
-                    ),
+                  focusNode: rowNode,
+                  onKeyEvent: (node, event) => _onNewsItemKey(
+                    rowIndex: rowIndex,
+                    itemIndex: i,
+                    itemCount: items.length,
+                    rowCount: rowCount,
+                    event: event,
+                    open: openNews,
+                  ),
+                  child: Builder(
+                    builder: (ctx) {
+                      final f = Focus.of(ctx).hasFocus;
+                      return GestureDetector(
+                        onTap: openNews,
+                        child: _NewsCard(
+                          width: banner ? 150.0 : 78.0,
+                          height: banner ? 84.0 : 108.0,
+                          imageUrl: img.isEmpty ? null : img,
+                          title: title.isNotEmpty ? title : 'Novedad',
+                          focused: f,
+                        ),
+                      );
+                    },
                   ),
                 );
               },
@@ -1330,7 +1389,6 @@ class _LauncherHomeState extends State<LauncherHome> {
     return rows;
   }
 
-  /// Dock centrado, ancho acotado, scrolleable. Solo iconos (sin título debajo).
   Widget _dock(List<InstalledRepo> apps,
       {required bool compact, required bool autofocusFirst}) {
     final icon = compact ? 40.0 : 48.0;
@@ -1367,20 +1425,18 @@ class _LauncherHomeState extends State<LauncherHome> {
                 onKeyEvent: _onDockKey,
                 child: ListView.separated(
                   scrollDirection: Axis.horizontal,
-                  padding: EdgeInsets.symmetric(
-                      horizontal: hPad, vertical: vPad),
+                  padding:
+                      EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
                   itemCount: apps.length + 1,
                   separatorBuilder: (_, __) => SizedBox(width: gap),
                   itemBuilder: (context, i) {
                     if (i == apps.length) {
                       return Focus(
                         onKeyEvent: (node, event) {
-                          // ↓ → primer elemento del primer slider de novedades
                           if (_isArrowDownPress(event) && !_newsMode) {
                             unawaited(_goNews());
                             return KeyEventResult.handled;
                           }
-                          // ↑ → historial (o herramientas si no hay historial)
                           if (_isArrowUpPress(event)) {
                             if (_hasHistory) {
                               _focusHistoryFromApps();
@@ -1389,7 +1445,6 @@ class _LauncherHomeState extends State<LauncherHome> {
                             }
                             return KeyEventResult.handled;
                           }
-                          // Último ítem (Añadir): → se queda
                           if (_isArrowRightPress(event)) {
                             return KeyEventResult.handled;
                           }
@@ -1417,12 +1472,10 @@ class _LauncherHomeState extends State<LauncherHome> {
                       return Focus(
                         focusNode: _dockFocus,
                         onKeyEvent: (node, event) {
-                          // ↓ → primer elemento del primer slider de novedades
                           if (_isArrowDownPress(event) && !_newsMode) {
                             unawaited(_goNews());
                             return KeyEventResult.handled;
                           }
-                          // ↑ → historial (o herramientas si no hay historial)
                           if (_isArrowUpPress(event)) {
                             if (_hasHistory) {
                               _focusHistoryFromApps();
@@ -1431,11 +1484,9 @@ class _LauncherHomeState extends State<LauncherHome> {
                             }
                             return KeyEventResult.handled;
                           }
-                          // ← en primera app → se queda
                           if (_isArrowLeftPress(event)) {
                             return KeyEventResult.handled;
                           }
-                          // Long-press 3 s → favoritos; corta → abrir repo
                           if (event is KeyDownEvent &&
                               event is! KeyRepeatEvent &&
                               _isSelectKey(event.logicalKey)) {
@@ -1471,12 +1522,10 @@ class _LauncherHomeState extends State<LauncherHome> {
                     }
                     return Focus(
                       onKeyEvent: (node, event) {
-                        // ↓ → novedades (primer ítem del primer slider)
                         if (_isArrowDownPress(event) && !_newsMode) {
                           unawaited(_goNews());
                           return KeyEventResult.handled;
                         }
-                        // ↑ → historial (o herramientas si no hay historial)
                         if (_isArrowUpPress(event)) {
                           if (_hasHistory) {
                             _focusHistoryFromApps();
@@ -1671,7 +1720,6 @@ class _IconBtn extends StatelessWidget {
           onArrowDown?.call();
           return KeyEventResult.handled;
         }
-        // ↑ en herramientas: no hay nada más arriba
         if (k == LogicalKeyboardKey.arrowUp) {
           return KeyEventResult.handled;
         }
@@ -1705,7 +1753,8 @@ class _IconBtn extends StatelessWidget {
                     ? Colors.white.withValues(alpha: 0.28)
                     : Colors.black.withValues(alpha: 0.28),
                 border: Border.all(
-                  color: f ? Colors.white : Colors.white.withValues(alpha: 0.12),
+                  color:
+                      f ? Colors.white : Colors.white.withValues(alpha: 0.12),
                   width: f ? 2 : 1,
                 ),
               ),
@@ -1719,7 +1768,6 @@ class _IconBtn extends StatelessWidget {
   }
 }
 
-/// Solo imagen + borde de foco. Sin título debajo (evita overflow).
 class _AppIcon extends StatelessWidget {
   final double size;
   final String label;
@@ -1803,7 +1851,8 @@ class _AppIcon extends StatelessWidget {
                 const Positioned(
                   right: 4,
                   top: 4,
-                  child: Icon(Icons.star_rounded, size: 13, color: kTvAccent),
+                  child:
+                      Icon(Icons.star_rounded, size: 13, color: kTvAccent),
                 ),
             ],
           ),
@@ -1813,7 +1862,6 @@ class _AppIcon extends StatelessWidget {
   }
 }
 
-/// Historial: título/subtítulo encima de la imagen. Foco = contorno.
 class _WideCard extends StatelessWidget {
   final double width;
   final double height;
@@ -1844,7 +1892,8 @@ class _WideCard extends StatelessWidget {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: focused ? Colors.white : Colors.white.withValues(alpha: 0.12),
+            color:
+                focused ? Colors.white : Colors.white.withValues(alpha: 0.12),
             width: focused ? 2.5 : 1,
           ),
           boxShadow: focused
@@ -1866,7 +1915,8 @@ class _WideCard extends StatelessWidget {
                   imageUrl: imageUrl!,
                   fit: BoxFit.cover,
                   memCacheWidth: (width * 2).round(),
-                  errorWidget: (_, __, ___) => const ColoredBox(color: kTvCard),
+                  errorWidget: (_, __, ___) =>
+                      const ColoredBox(color: kTvCard),
                 )
               else
                 const ColoredBox(color: kTvCard),
@@ -1900,7 +1950,9 @@ class _WideCard extends StatelessWidget {
                         color: Colors.white,
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
-                        shadows: [Shadow(color: Colors.black54, blurRadius: 4)],
+                        shadows: [
+                          Shadow(color: Colors.black54, blurRadius: 4)
+                        ],
                       ),
                     ),
                     if (subtitle != null && subtitle!.isNotEmpty) ...[
@@ -1940,7 +1992,6 @@ class _WideCard extends StatelessWidget {
   }
 }
 
-/// Novedades: título encima de la imagen. Foco = solo contorno.
 class _NewsCard extends StatelessWidget {
   final double width;
   final double height;

@@ -7,6 +7,7 @@ import 'descubrir/descubrir.dart';
 import 'buscar/buscar.dart';
 import 'biblioteca/biblioteca.dart';
 import 'config/config.dart';
+import 'live/live.dart';
 import '../widgets/focusable.dart';
 import '../widgets/glass.dart';
 
@@ -101,6 +102,8 @@ class _RepoMainHomeState extends State<RepoMainHome> {
           out.add((id: id, page: RepoDiscoverPage(repo: repo), icon: Icons.explore_outlined, selectedIcon: Icons.explore_rounded));
         case 'search':
           out.add((id: id, page: RepoSearchPage(repo: repo), icon: Icons.search_rounded, selectedIcon: Icons.search_rounded));
+        case 'live':
+          out.add((id: id, page: RepoLivePage(repo: repo), icon: Icons.live_tv_outlined, selectedIcon: Icons.live_tv_rounded));
         case 'library':
           out.add((id: id, page: RepoLibraryPage(repo: repo), icon: Icons.bookmark_border_rounded, selectedIcon: Icons.bookmark_rounded));
         case 'settings':

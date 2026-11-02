@@ -351,6 +351,18 @@ class RepoManifest extends Equatable {
   /// El repo lo declara en lol.json; también puede ir por ítem en getNews.
   final String newsImageStyle;
 
+  /// Estilo de tarjetas en Descubrir: `poster` (vertical) o `backdrop` (horizontal).
+  final String discoverImageStyle;
+
+  /// Estilo de tarjetas en Buscar: `poster` (vertical) o `backdrop` (horizontal).
+  final String searchImageStyle;
+
+  /// Si true, muestra el título debajo (o sobre) del póster en Descubrir.
+  final bool discoverShowTitle;
+
+  /// Si true, muestra el título debajo (o sobre) del póster en Buscar.
+  final bool searchShowTitle;
+
   const RepoManifest({
     required this.id,
     required this.name,
@@ -373,12 +385,54 @@ class RepoManifest extends Equatable {
     this.color,
     this.theme = const RepoTheme(),
     this.newsImageStyle = 'poster',
+    this.discoverImageStyle = 'poster',
+    this.searchImageStyle = 'poster',
+    this.discoverShowTitle = false,
+    this.searchShowTitle = false,
   });
 
 
+  /// Repo orientado a TV en vivo / IPTV (no catálogo VOD).
+  /// Se detecta por categories o capabilities: live | tv | iptv | channel(s).
+  bool get isLiveRepo {
+    bool hit(String s) {
+      final t = s.toLowerCase().trim();
+      return t == 'live' ||
+          t == 'tv' ||
+          t == 'iptv' ||
+          t == 'channel' ||
+          t == 'channels' ||
+          t == 'canales' ||
+          t == 'en vivo' ||
+          t == 'envivo';
+    }
+
+    for (final c in capabilities) {
+      if (hit(c)) return true;
+    }
+    final cats = raw['categories'] ?? raw['category'];
+    if (cats is List) {
+      for (final c in cats) {
+        if (hit(c.toString())) return true;
+      }
+    } else if (cats is String && hit(cats)) {
+      return true;
+    }
+    final type = (raw['type'] ?? raw['repoType'] ?? raw['kind'] ?? '')
+        .toString()
+        .toLowerCase();
+    if (hit(type)) return true;
+    return false;
+  }
+
   /// Pestañas del menú del repo (inicio / descubrir / buscar / biblioteca / ajustes).
-  /// Prioridad: `tabs` o `pages` en lol.json → derivadas de `capabilities` → todas.
+  /// Prioridad: repos live → solo live+settings; luego `tabs`/`pages`; luego capabilities.
   List<String> get resolvedTabs {
+    // IPTV / live: solo TV Online + Ajustes (sin home/descubrir/buscar/biblioteca).
+    if (isLiveRepo) {
+      return const ['live', 'settings'];
+    }
+
     final explicit = raw['tabs'] ?? raw['pages'] ?? raw['menu'];
     if (explicit is List && explicit.isNotEmpty) {
       return explicit
@@ -475,6 +529,70 @@ class RepoManifest extends Equatable {
     return 'poster';
   }
 
+  /// `poster` | `backdrop` a partir de claves del repo (discover / search / genérico).
+  static String _parseSectionImageStyle(
+    Map<String, dynamic> raw, {
+    required String section, // 'discover' | 'search'
+    String fallback = 'poster',
+  }) {
+    dynamic nested;
+    final sectionMap = raw[section];
+    if (sectionMap is Map) nested = sectionMap;
+
+    final v = (raw['${section}ImageStyle'] ??
+            raw['${section}Style'] ??
+            raw['${section}_image_style'] ??
+            raw['${section}PosterStyle'] ??
+            (nested is Map ? nested['imageStyle'] : null) ??
+            (nested is Map ? nested['style'] : null) ??
+            (nested is Map ? nested['itemType'] : null) ??
+            raw['imageStyle'] ??
+            raw['style'] ??
+            fallback)
+        .toString()
+        .toLowerCase()
+        .trim();
+
+    if (v.contains('banner') ||
+        v.contains('back') ||
+        v.contains('horizontal') ||
+        v == 'wide' ||
+        v == 'landscape') {
+      return 'backdrop';
+    }
+    return 'poster';
+  }
+
+  static bool _parseSectionShowTitle(
+    Map<String, dynamic> raw, {
+    required String section,
+    bool fallback = false,
+  }) {
+    dynamic nested;
+    final sectionMap = raw[section];
+    if (sectionMap is Map) nested = sectionMap;
+
+    final v = raw['${section}ShowTitle'] ??
+        raw['${section}Title'] ??
+        raw['${section}_show_title'] ??
+        (nested is Map ? nested['showTitle'] : null) ??
+        (nested is Map ? nested['title'] : null) ??
+        (nested is Map ? nested['show_title'] : null) ??
+        raw['showTitle'] ??
+        raw['show_title'];
+
+    if (v == null) return fallback;
+    if (v is bool) return v;
+    final s = v.toString().toLowerCase().trim();
+    if (s == 'true' || s == '1' || s == 'yes' || s == 'on' || s == 'bottom') {
+      return true;
+    }
+    if (s == 'false' || s == '0' || s == 'no' || s == 'off' || s == 'none') {
+      return false;
+    }
+    return fallback;
+  }
+
   factory RepoManifest.fromJson(Map<String, dynamic> j, {String? repo}) {
     final configRaw = j['config'] ?? j['settings'] ?? [];
     final fields = <RepoConfigField>[];
@@ -549,6 +667,10 @@ class RepoManifest extends Equatable {
       episodesPagination: paginate,
       episodesPerPage: perPage,
       newsImageStyle: _parseNewsImageStyle(j),
+      discoverImageStyle: _parseSectionImageStyle(j, section: 'discover'),
+      searchImageStyle: _parseSectionImageStyle(j, section: 'search'),
+      discoverShowTitle: _parseSectionShowTitle(j, section: 'discover'),
+      searchShowTitle: _parseSectionShowTitle(j, section: 'search'),
       apiVersion: apiVersion,
       browser: j['browser'] == true || j['browser'] == 'true' || j['browser'] == 1,
       sectionLabel: sectionLabel,
@@ -579,6 +701,10 @@ class RepoManifest extends Equatable {
     Color? color,
     RepoTheme? theme,
     String? newsImageStyle,
+    String? discoverImageStyle,
+    String? searchImageStyle,
+    bool? discoverShowTitle,
+    bool? searchShowTitle,
   }) {
     return RepoManifest(
       id: id ?? this.id,
@@ -602,6 +728,10 @@ class RepoManifest extends Equatable {
       color: color ?? this.color,
       theme: theme ?? this.theme,
       newsImageStyle: newsImageStyle ?? this.newsImageStyle,
+      discoverImageStyle: discoverImageStyle ?? this.discoverImageStyle,
+      searchImageStyle: searchImageStyle ?? this.searchImageStyle,
+      discoverShowTitle: discoverShowTitle ?? this.discoverShowTitle,
+      searchShowTitle: searchShowTitle ?? this.searchShowTitle,
     );
   }
 
@@ -616,6 +746,10 @@ class RepoManifest extends Equatable {
         'repo': repo,
         if (entryJs != null) 'entry': entryJs,
         'newsImageStyle': newsImageStyle,
+        'discoverImageStyle': discoverImageStyle,
+        'searchImageStyle': searchImageStyle,
+        'discoverShowTitle': discoverShowTitle,
+        'searchShowTitle': searchShowTitle,
         'config': configFields.map((e) => e.toJson()).toList(),
         'capabilities': capabilities,
         if (episodesPagination) 'episodesPagination': true,
@@ -627,7 +761,22 @@ class RepoManifest extends Equatable {
       };
 
   @override
-  List<Object?> get props => [id, name, version, repo, episodesPagination, episodesPerPage, apiVersion, newsImageStyle, sectionLabel, browser];
+  List<Object?> get props => [
+        id,
+        name,
+        version,
+        repo,
+        episodesPagination,
+        episodesPerPage,
+        apiVersion,
+        newsImageStyle,
+        discoverImageStyle,
+        searchImageStyle,
+        discoverShowTitle,
+        searchShowTitle,
+        sectionLabel,
+        browser,
+      ];
 }
 
 
@@ -984,6 +1133,18 @@ class ContentItem {
 
   bool get isChannel =>
       type == 'channel' || type == 'live' || type == 'tvchannel' || type == 'iptv';
+
+  /// Contenido de tipo música / audio-only (repo declara type music|audio|song|musica).
+  bool get isMusic {
+    final t = type.toLowerCase().trim();
+    return t == 'music' ||
+        t == 'audio' ||
+        t == 'song' ||
+        t == 'musica' ||
+        t == 'música' ||
+        t == 'track' ||
+        t == 'album';
+  }
 
   /// Programa en vivo actual (si el repo lo pone en extra['currentProgram']).
   String? get currentProgram {

@@ -111,5 +111,48 @@ class RepoPrefs extends ChangeNotifier {
     await _storage.setString(_k(repoId, 'ad_url'), url);
     notifyListeners();
   }
+
+  /// Historial de búsquedas por repo (persiste al cerrar repo/app).
+  static const int maxSearchHistory = 15;
+
+  List<String> searchHistory(String repoId) {
+    final raw = _storage.getJson(_k(repoId, 'search_history'));
+    if (raw is List) {
+      return raw.map((e) => e.toString()).where((e) => e.isNotEmpty).toList();
+    }
+    return const [];
+  }
+
+  Future<void> setSearchHistory(String repoId, List<String> history) async {
+    final trimmed = history
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .take(maxSearchHistory)
+        .toList();
+    await _storage.setJson(_k(repoId, 'search_history'), trimmed);
+    notifyListeners();
+  }
+
+  Future<void> addSearchQuery(String repoId, String query) async {
+    final q = query.trim();
+    if (q.isEmpty) return;
+    final list = List<String>.from(searchHistory(repoId));
+    list.remove(q);
+    list.insert(0, q);
+    if (list.length > maxSearchHistory) {
+      list.removeRange(maxSearchHistory, list.length);
+    }
+    await setSearchHistory(repoId, list);
+  }
+
+  Future<void> removeSearchQuery(String repoId, String query) async {
+    final list = List<String>.from(searchHistory(repoId));
+    list.remove(query);
+    await setSearchHistory(repoId, list);
+  }
+
+  Future<void> clearSearchHistory(String repoId) async {
+    await setSearchHistory(repoId, const []);
+  }
 }
 

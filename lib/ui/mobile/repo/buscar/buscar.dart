@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:provider/provider.dart';
 import '../../../../data/models/repo_manifest.dart';
 import '../../../../data/services/content_service.dart';
+import '../../../../data/services/repo_prefs.dart';
 import '../../widgets/focusable.dart';
 import '../../repo/contenido/contenido.dart';
 
@@ -17,11 +19,37 @@ class _RepoSearchPageState extends State<RepoSearchPage> {
   List<ContentItem> _results = [];
   bool _loading = false;
 
-  // Historial de búsquedas recientes
-  final List<String> _history = [];
+  // Historial de búsquedas recientes (persistente por repo)
+  List<String> _history = [];
+
+  String get _repoId => widget.repo.manifest.id;
+
+  bool get _useBackdrop =>
+      widget.repo.manifest.searchImageStyle == 'backdrop';
+
+  bool get _showTitle => widget.repo.manifest.searchShowTitle;
 
   /// true si el campo está vacío y no hay resultados activos
   bool get _showingHistory => _controller.text.trim().isEmpty && !_loading;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadHistory());
+  }
+
+  void _loadHistory() {
+    if (!mounted) return;
+    final prefs = context.read<RepoPrefs>();
+    setState(() {
+      _history = List<String>.from(prefs.searchHistory(_repoId));
+    });
+  }
+
+  Future<void> _persistHistory() async {
+    if (!mounted) return;
+    await context.read<RepoPrefs>().setSearchHistory(_repoId, _history);
+  }
 
   Future<void> _search(String q) async {
     final query = q.trim();
@@ -36,8 +64,11 @@ class _RepoSearchPageState extends State<RepoSearchPage> {
     setState(() {
       _history.remove(query);
       _history.insert(0, query);
-      if (_history.length > 10) _history.removeLast();
+      if (_history.length > RepoPrefs.maxSearchHistory) {
+        _history = _history.take(RepoPrefs.maxSearchHistory).toList();
+      }
     });
+    await _persistHistory();
 
     setState(() => _loading = true);
     final list = await ContentService.instance.search(widget.repo, query);
@@ -54,12 +85,14 @@ class _RepoSearchPageState extends State<RepoSearchPage> {
     _search(query);
   }
 
-  void _clearHistory() {
+  Future<void> _clearHistory() async {
     setState(() => _history.clear());
+    await _persistHistory();
   }
 
-  void _removeHistoryItem(String query) {
+  Future<void> _removeHistoryItem(String query) async {
     setState(() => _history.remove(query));
+    await _persistHistory();
   }
 
   @override
@@ -93,50 +126,30 @@ class _RepoSearchPageState extends State<RepoSearchPage> {
                   'Búsquedas recientes',
                   style: TextStyle(
                     color: Colors.white70,
-                    fontSize: 14,
                     fontWeight: FontWeight.w600,
+                    fontSize: 14,
                   ),
                 ),
                 TextButton(
                   onPressed: _clearHistory,
                   child: const Text(
-                    'Limpiar',
-                    style: TextStyle(color: Color(0xFFFF2D2D), fontSize: 13),
+                    'Borrar todo',
+                    style: TextStyle(color: Colors.white54, fontSize: 13),
                   ),
                 ),
               ],
             ),
           ),
           ..._history.map(
-            (query) => Focusable(
-              onTap: () => _onHistoryTap(query),
-              builder: (focused) => AnimatedContainer(
-                duration: const Duration(milliseconds: 100),
-                margin: const EdgeInsets.only(bottom: 8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1A222D),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: focused
-                        ? const Color(0xFFFF2D2D)
-                        : Colors.transparent,
-                    width: 2,
-                  ),
-                ),
-                child: ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.history, color: Colors.white54),
-                  title: Text(
-                    query,
-                    style: const TextStyle(color: Colors.white, fontSize: 14),
-                  ),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white38, size: 18),
-                    onPressed: () => _removeHistoryItem(query),
-                  ),
-                  onTap: () => _onHistoryTap(query),
-                ),
+            (q) => ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.history, color: Colors.white54),
+              title: Text(q, style: const TextStyle(color: Colors.white)),
+              trailing: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white38, size: 18),
+                onPressed: () => _removeHistoryItem(q),
               ),
+              onTap: () => _onHistoryTap(q),
             ),
           ),
         ],
@@ -145,64 +158,112 @@ class _RepoSearchPageState extends State<RepoSearchPage> {
   }
 
   Widget _buildResults() {
+    if (_results.isEmpty) {
+      return const Expanded(
+        child: Center(
+          child: Text('Sin resultados', style: TextStyle(color: Colors.white54)),
+        ),
+      );
+    }
+
+    final useBackdrop = _useBackdrop;
+    final showTitle = _showTitle;
+
     return Expanded(
       child: GridView.builder(
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-          maxCrossAxisExtent: 160,
-          childAspectRatio: 0.65,
-          crossAxisSpacing: 12,
-          mainAxisSpacing: 12,
-        ),
+        padding: const EdgeInsets.fromLTRB(14, 4, 14, 24),
+        gridDelegate: useBackdrop
+            ? SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                mainAxisSpacing: 12,
+                crossAxisSpacing: 10,
+                childAspectRatio: showTitle ? 1.55 : 1.78,
+              )
+            : SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                mainAxisSpacing: 10,
+                crossAxisSpacing: 8,
+                childAspectRatio: showTitle ? 0.58 : 0.68,
+              ),
         itemCount: _results.length,
-        itemBuilder: (context, i) {
+        itemBuilder: (_, i) {
           final item = _results[i];
+          final img = useBackdrop
+              ? (item.backdrop ?? item.poster)
+              : (item.poster ?? item.backdrop);
+
           return Focusable(
-            onTap: () => Navigator.of(context).push(MaterialPageRoute(
-              builder: (_) => DetailsPage(repo: widget.repo, itemId: item.id),
-            )),
-            builder: (focused) => AnimatedContainer(
+            onTap: () {
+              Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) =>
+                    DetailsPage(repo: widget.repo, itemId: item.id),
+              ));
+            },
+            builder: (f) => AnimatedContainer(
               duration: const Duration(milliseconds: 100),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
-                  color: focused ? const Color(0xFFFF2D2D) : Colors.transparent,
-                  width: 2.5,
+                  color: f ? Colors.white : Colors.transparent,
+                  width: 2,
                 ),
               ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: item.poster != null
-                    ? Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          CachedNetworkImage(
-                            imageUrl: item.poster!,
-                            fit: BoxFit.cover,
-                          ),
-                          Positioned(
-                            left: 0,
-                            right: 0,
-                            top: 0,
-                            height: 42,
-                            child: IgnorePointer(
-                              child: DecoratedBox(
-                                decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    begin: Alignment.topCenter,
-                                    end: Alignment.bottomCenter,
-                                    colors: [
-                                      Colors.white.withValues(alpha: 0.22),
-                                      Colors.transparent,
-                                    ],
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: img != null
+                          ? Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                CachedNetworkImage(
+                                  imageUrl: img,
+                                  fit: BoxFit.cover,
+                                  memCacheWidth: useBackdrop ? 480 : 240,
+                                ),
+                                Positioned(
+                                  left: 0,
+                                  right: 0,
+                                  top: 0,
+                                  height: 42,
+                                  child: IgnorePointer(
+                                    child: DecoratedBox(
+                                      decoration: BoxDecoration(
+                                        gradient: LinearGradient(
+                                          begin: Alignment.topCenter,
+                                          end: Alignment.bottomCenter,
+                                          colors: [
+                                            Colors.white.withValues(alpha: 0.22),
+                                            Colors.transparent,
+                                          ],
+                                        ),
+                                      ),
+                                    ),
                                   ),
                                 ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      )
-                    : Container(color: const Color(0xFF1A222D)),
+                              ],
+                            )
+                          : Container(color: const Color(0xFF1A222D)),
+                    ),
+                  ),
+                  if (showTitle)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(2, 6, 2, 0),
+                      child: Text(
+                        item.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          height: 1.2,
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
           );

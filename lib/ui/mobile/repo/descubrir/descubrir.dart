@@ -300,21 +300,36 @@ class _RepoDiscoverPageState extends State<RepoDiscoverPage> {
     if (_items.isEmpty) {
       return Center(child: Text(_error ?? 'Sin resultados', style: const TextStyle(color: Colors.white54)));
     }
+
+    final useBackdrop = widget.repo.manifest.discoverImageStyle == 'backdrop';
+    final showTitle = widget.repo.manifest.discoverShowTitle;
+
     return GridView.builder(
       controller: _scroll,
       padding: const EdgeInsets.fromLTRB(14, 4, 14, 24),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        mainAxisSpacing: 10,
-        crossAxisSpacing: 8,
-        childAspectRatio: 0.68,
-      ),
+      gridDelegate: useBackdrop
+          ? SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              mainAxisSpacing: 12,
+              crossAxisSpacing: 10,
+              childAspectRatio: showTitle ? 1.55 : 1.78,
+            )
+          : SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              mainAxisSpacing: 10,
+              crossAxisSpacing: 8,
+              childAspectRatio: showTitle ? 0.58 : 0.68,
+            ),
       itemCount: _items.length + (_loadingMore ? 1 : 0),
       itemBuilder: (_, i) {
         if (i >= _items.length) {
           return const Center(child: CircularProgressIndicator(color: _kAccent, strokeWidth: 2));
         }
         final item = _items[i];
+        final img = useBackdrop
+            ? (item.backdrop ?? item.poster)
+            : (item.poster ?? item.backdrop);
+
         return Focusable(
           onTap: () {
             Navigator.of(context).push(MaterialPageRoute(
@@ -327,33 +342,62 @@ class _RepoDiscoverPageState extends State<RepoDiscoverPage> {
               borderRadius: BorderRadius.circular(8),
               border: Border.all(color: f ? Colors.white : Colors.transparent, width: 2),
             ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(6),
-              child: item.poster != null
-                  ? Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        CachedNetworkImage(imageUrl: item.poster!, fit: BoxFit.cover, memCacheWidth: 240),
-                        Positioned(
-                          left: 0, right: 0, top: 0, height: 42,
-                          child: IgnorePointer(
-                            child: DecoratedBox(
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  begin: Alignment.topCenter,
-                                  end: Alignment.bottomCenter,
-                                  colors: [
-                                    Colors.white.withValues(alpha: 0.22),
-                                    Colors.transparent,
-                                  ],
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: img != null
+                        ? Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              CachedNetworkImage(
+                                imageUrl: img,
+                                fit: BoxFit.cover,
+                                memCacheWidth: useBackdrop ? 480 : 240,
+                              ),
+                              Positioned(
+                                left: 0,
+                                right: 0,
+                                top: 0,
+                                height: 42,
+                                child: IgnorePointer(
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      gradient: LinearGradient(
+                                        begin: Alignment.topCenter,
+                                        end: Alignment.bottomCenter,
+                                        colors: [
+                                          Colors.white.withValues(alpha: 0.22),
+                                          Colors.transparent,
+                                        ],
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    )
-                  : Container(color: const Color(0xFF1A222D)),
+                            ],
+                          )
+                        : Container(color: const Color(0xFF1A222D)),
+                  ),
+                ),
+                if (showTitle)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(2, 6, 2, 0),
+                    child: Text(
+                      item.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        height: 1.2,
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
         );

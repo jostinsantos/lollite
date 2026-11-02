@@ -12,6 +12,8 @@ class CachedPoster extends StatelessWidget {
   final BorderRadius? borderRadius;
   /// Intensidad del sheen (0 = off).
   final double sheenStrength;
+  /// Si no hay imagen, muestra las iniciales de este texto.
+  final String? title;
 
   const CachedPoster({
     super.key,
@@ -23,6 +25,7 @@ class CachedPoster extends StatelessWidget {
     this.memCacheHeight,
     this.borderRadius,
     this.sheenStrength = 0.22,
+    this.title,
   });
 
   factory CachedPoster.poster(
@@ -30,6 +33,7 @@ class CachedPoster extends StatelessWidget {
     double width = 130,
     double height = 195,
     double sheenStrength = 0.22,
+    String? title,
   }) {
     return CachedPoster(
       url: url,
@@ -38,6 +42,7 @@ class CachedPoster extends StatelessWidget {
       memCacheWidth: (width * 2).round().clamp(100, 400),
       memCacheHeight: (height * 2).round().clamp(150, 600),
       sheenStrength: sheenStrength,
+      title: title,
     );
   }
 
@@ -46,6 +51,7 @@ class CachedPoster extends StatelessWidget {
     double? width,
     double height = 160,
     double sheenStrength = 0.18,
+    String? title,
   }) {
     return CachedPoster(
       url: url,
@@ -54,6 +60,7 @@ class CachedPoster extends StatelessWidget {
       memCacheWidth: 640,
       memCacheHeight: 360,
       sheenStrength: sheenStrength,
+      title: title,
     );
   }
 
@@ -65,7 +72,7 @@ class CachedPoster extends StatelessWidget {
 
     Widget image;
     if (url == null || url!.isEmpty) {
-      image = const ColoredBox(color: Color(0xFF1A222D));
+      image = _InitialsBox(title: title, width: width, height: height);
     } else {
       image = CachedNetworkImage(
         imageUrl: url!,
@@ -77,10 +84,7 @@ class CachedPoster extends StatelessWidget {
         fadeInDuration: const Duration(milliseconds: 150),
         fadeOutDuration: const Duration(milliseconds: 100),
         placeholder: (_, __) => const _SkeletonBox(),
-        errorWidget: (_, __, ___) => const ColoredBox(
-          color: Color(0xFF1A222D),
-          child: Icon(Icons.broken_image, color: Colors.white24, size: 28),
-        ),
+        errorWidget: (_, __, ___) => _InitialsBox(title: title, width: width, height: height),
       );
     }
 
@@ -148,6 +152,44 @@ class _SkeletonBoxState extends State<_SkeletonBox> with SingleTickerProviderSta
       animation: _c,
       builder: (_, __) => ColoredBox(
         color: Color.lerp(const Color(0xFF151B24), const Color(0xFF1F2836), _c.value)!,
+      ),
+    );
+  }
+}
+
+/// Placeholder con iniciales del título cuando no hay poster.
+class _InitialsBox extends StatelessWidget {
+  final String? title;
+  final double? width;
+  final double? height;
+  const _InitialsBox({this.title, this.width, this.height});
+
+  String get _initials {
+    final t = (title ?? '').trim();
+    if (t.isEmpty) return '?';
+    final parts = t.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+    if (t.length >= 2) return t.substring(0, 2).toUpperCase();
+    return t[0].toUpperCase();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = (height != null && height! > 0) ? (height! * 0.32).clamp(18.0, 42.0) : 28.0;
+    return ColoredBox(
+      color: const Color(0xFF1A222D),
+      child: Center(
+        child: Text(
+          _initials,
+          style: TextStyle(
+            color: Colors.white70,
+            fontSize: size,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 1.2,
+          ),
+        ),
       ),
     );
   }

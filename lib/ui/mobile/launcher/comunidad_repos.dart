@@ -26,6 +26,15 @@ class _CommunityPageState extends State<CommunityPage> {
   static const _bg = Color(0xFF070A10);
   static const _card = Color(0xFF121820);
 
+  /// Títulos visibles: guiones → espacio (ej. "mi-addon" → "mi addon").
+   String _titleText(String? s) {
+    if (s == null || s.isEmpty) return '';
+    return s
+        .replaceAll('-', ' ')
+        .replaceAll('_', ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
   @override
   void initState() {
     super.initState();
@@ -88,7 +97,9 @@ class _CommunityPageState extends State<CommunityPage> {
     final key = userRepo.toLowerCase();
     for (final r in installed) {
       if (r.manifest.repo.toLowerCase() == key) return r.manifest.id;
-      if (r.manifest.id.toLowerCase() == key.replaceAll('/', '-')) return r.manifest.id;
+      if (r.manifest.id.toLowerCase() == key.replaceAll('/', '-')) {
+        return r.manifest.id;
+      }
     }
     return null;
   }
@@ -124,7 +135,9 @@ class _CommunityPageState extends State<CommunityPage> {
       await mgr.installFromPreview(preview);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Instalado: ${preview.manifest.name}')),
+          SnackBar(
+            content: Text('Instalado: ${_titleText(preview.manifest.name)}'),
+          ),
         );
         setState(() {});
       }
@@ -146,10 +159,16 @@ class _CommunityPageState extends State<CommunityPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1A222D),
-        title: const Text('Desinstalar', style: TextStyle(color: Colors.white)),
-        content: Text('¿Quitar $userRepo?', style: const TextStyle(color: Colors.white70)),
+        title:
+            const Text('Desinstalar', style: TextStyle(color: Colors.white)),
+        content: Text(
+          '¿Quitar ${_titleText(userRepo.contains('/') ? userRepo.split('/').last : userRepo)}?',
+          style: const TextStyle(color: Colors.white70),
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancelar')),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('Desinstalar', style: TextStyle(color: _accent)),
@@ -165,7 +184,13 @@ class _CommunityPageState extends State<CommunityPage> {
         await context.read<LibraryService>().clearRepoData(id);
       } catch (_) {}
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Desinstalado: $userRepo')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Desinstalado: ${_titleText(userRepo.contains('/') ? userRepo.split('/').last : userRepo)}',
+            ),
+          ),
+        );
         setState(() {});
       }
     } finally {
@@ -190,7 +215,6 @@ class _CommunityPageState extends State<CommunityPage> {
       backgroundColor: _bg,
       body: Stack(
         children: [
-          // Fondos con glow
           Positioned(
             top: -80,
             right: -40,
@@ -208,20 +232,26 @@ class _CommunityPageState extends State<CommunityPage> {
                 _installBar(),
                 Expanded(
                   child: _loading
-                      ? const Center(child: CircularProgressIndicator(color: _accent))
+                      ? const Center(
+                          child: CircularProgressIndicator(color: _accent))
                       : _error != null
                           ? Center(
                               child: Text(_error!,
-                                  style: const TextStyle(color: Colors.white54)),
+                                  style:
+                                      const TextStyle(color: Colors.white54)),
                             )
                           : _items.isEmpty
                               ? const Center(
-                                  child: Text('No hay repos en la comunidad',
-                                      style: TextStyle(color: Colors.white54)),
+                                  child: Text(
+                                    'No hay repos en la comunidad',
+                                    style: TextStyle(color: Colors.white54),
+                                  ),
                                 )
                               : GridView.builder(
-                                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
-                                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(16, 8, 16, 28),
+                                  gridDelegate:
+                                      SliverGridDelegateWithFixedCrossAxisCount(
                                     crossAxisCount: cross,
                                     mainAxisSpacing: 14,
                                     crossAxisSpacing: 14,
@@ -237,7 +267,8 @@ class _CommunityPageState extends State<CommunityPage> {
                                         if (installed) {
                                           _uninstall(item.repo);
                                         } else {
-                                          _install(item.repo, fallbackAvatar: item.avatarUrl);
+                                          _install(item.repo,
+                                              fallbackAvatar: item.avatarUrl);
                                         }
                                       },
                                       builder: (f) => _RepoCard(
@@ -246,6 +277,7 @@ class _CommunityPageState extends State<CommunityPage> {
                                         installed: installed,
                                         focused: f,
                                         busy: _busy,
+                                        titleText: _titleText,
                                       ),
                                     );
                                   },
@@ -335,7 +367,8 @@ class _CommunityPageState extends State<CommunityPage> {
                       hintStyle: TextStyle(color: Colors.white30),
                       border: InputBorder.none,
                       isDense: true,
-                      prefixIcon: Icon(Icons.link_rounded, color: Colors.white38, size: 20),
+                      prefixIcon: Icon(Icons.link_rounded,
+                          color: Colors.white38, size: 20),
                       prefixIconConstraints: BoxConstraints(minWidth: 36),
                     ),
                     onSubmitted: (v) {
@@ -347,8 +380,10 @@ class _CommunityPageState extends State<CommunityPage> {
                 FilledButton(
                   style: FilledButton.styleFrom(
                     backgroundColor: _accent,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
                   ),
                   onPressed: _busy
                       ? null
@@ -360,7 +395,8 @@ class _CommunityPageState extends State<CommunityPage> {
                       ? const SizedBox(
                           width: 18,
                           height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
                         )
                       : const Text('Instalar'),
                 ),
@@ -379,6 +415,7 @@ class _RepoCard extends StatelessWidget {
   final bool installed;
   final bool focused;
   final bool busy;
+  final String Function(String?) titleText;
 
   const _RepoCard({
     required this.item,
@@ -386,7 +423,13 @@ class _RepoCard extends StatelessWidget {
     required this.installed,
     required this.focused,
     required this.busy,
+    required this.titleText,
   });
+
+  String get _displayName {
+    final t = titleText(item.name);
+    return t.isNotEmpty ? t : item.name;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -432,7 +475,6 @@ class _RepoCard extends StatelessWidget {
             ),
             child: Stack(
               children: [
-                // Brillo superior
                 Positioned(
                   top: -30,
                   right: -20,
@@ -443,7 +485,9 @@ class _RepoCard extends StatelessWidget {
                       shape: BoxShape.circle,
                       gradient: RadialGradient(
                         colors: [
-                          (installed ? const Color(0xFF3DDC97) : const Color(0xFFE50914))
+                          (installed
+                                  ? const Color(0xFF3DDC97)
+                                  : const Color(0xFFE50914))
                               .withValues(alpha: 0.25),
                           Colors.transparent,
                         ],
@@ -465,7 +509,7 @@ class _RepoCard extends StatelessWidget {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  item.name,
+                                  _displayName,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
@@ -480,7 +524,8 @@ class _RepoCard extends StatelessWidget {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
-                                    color: Colors.white.withValues(alpha: 0.45),
+                                    color:
+                                        Colors.white.withValues(alpha: 0.45),
                                     fontSize: 11,
                                   ),
                                 ),
@@ -489,7 +534,8 @@ class _RepoCard extends StatelessWidget {
                           ),
                           if (item.stars > 0)
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
                               decoration: BoxDecoration(
                                 color: Colors.white.withValues(alpha: 0.06),
                                 borderRadius: BorderRadius.circular(20),
@@ -497,11 +543,13 @@ class _RepoCard extends StatelessWidget {
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  const Icon(Icons.star_rounded, size: 14, color: Color(0xFFFFC857)),
+                                  const Icon(Icons.star_rounded,
+                                      size: 14, color: Color(0xFFFFC857)),
                                   const SizedBox(width: 3),
                                   Text(
                                     '${item.stars}',
-                                    style: const TextStyle(color: Colors.white70, fontSize: 11),
+                                    style: const TextStyle(
+                                        color: Colors.white70, fontSize: 11),
                                   ),
                                 ],
                               ),
@@ -528,11 +576,14 @@ class _RepoCard extends StatelessWidget {
                         children: [
                           _chip(
                             installed ? 'Instalado' : 'Disponible',
-                            installed ? const Color(0xFF3DDC97) : Colors.white54,
+                            installed
+                                ? const Color(0xFF3DDC97)
+                                : Colors.white54,
                           ),
                           const Spacer(),
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 8),
                             decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(14),
                               gradient: LinearGradient(
@@ -550,7 +601,8 @@ class _RepoCard extends StatelessWidget {
                                   ? null
                                   : [
                                       BoxShadow(
-                                        color: const Color(0xFFE50914).withValues(alpha: 0.35),
+                                        color: const Color(0xFFE50914)
+                                            .withValues(alpha: 0.35),
                                         blurRadius: 12,
                                         offset: const Offset(0, 4),
                                       ),
@@ -559,7 +611,8 @@ class _RepoCard extends StatelessWidget {
                             child: Text(
                               installed ? 'Quitar' : 'Instalar',
                               style: TextStyle(
-                                color: installed ? Colors.white70 : Colors.white,
+                                color:
+                                    installed ? Colors.white70 : Colors.white,
                                 fontWeight: FontWeight.w700,
                                 fontSize: 12,
                               ),
@@ -607,12 +660,14 @@ class _RepoCard extends StatelessWidget {
   }
 
   Widget _letter() {
+    final name = _displayName;
     return Container(
       color: const Color(0xFF1A222D),
       alignment: Alignment.center,
       child: Text(
-        item.name.isNotEmpty ? item.name[0].toUpperCase() : '?',
-        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 20),
+        name.isNotEmpty ? name[0].toUpperCase() : '?',
+        style: const TextStyle(
+            color: Colors.white, fontWeight: FontWeight.bold, fontSize: 20),
       ),
     );
   }
@@ -627,7 +682,8 @@ class _RepoCard extends StatelessWidget {
       ),
       child: Text(
         label,
-        style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600),
+        style: TextStyle(
+            color: color, fontSize: 11, fontWeight: FontWeight.w600),
       ),
     );
   }
